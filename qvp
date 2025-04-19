@@ -1,0 +1,76 @@
+import os
+from moviepy import VideoFileClip
+from PIL import Image, ImageOps, ImageDraw, ImageFont
+
+# 配置参数
+NUM_FRAMES = 16  # 截取图片数量
+GRID_SIZE = (4, 4)  # 图片合并排列方式
+BORDER_SIZE = 1.25  # 每张图片的白边大小（单位：像素）
+TEXT_COLOR = "red"  # 时间标记的颜色
+
+# 从视频中提取帧
+def extract_frames(video_path, num_frames=NUM_FRAMES):
+    with VideoFileClip(video_path) as clip:
+        duration = clip.duration
+        frame_times = [duration * i / num_frames for i in range(num_frames)]
+        frames = []
+        for t in frame_times:
+            frame = clip.get_frame(t)
+            img = Image.fromarray(frame)
+            draw = ImageDraw.Draw(img)
+
+            # 标记时间位置
+            hours, remainder = divmod(int(t), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            time_text = f"{hours:02}:{minutes:02}:{seconds:02}"  # 格式化为 "小时:分钟:秒"
+            try:
+                font = ImageFont.truetype("arial.ttf", 26)
+            except IOError:
+                font = ImageFont.load_default()
+            draw.text((10, 10), time_text, fill=TEXT_COLOR, font=font)
+
+            frames.append(img)
+        return frames
+
+# 创建图片拼贴
+def create_collage(images, output_path, grid_size=GRID_SIZE, border_size=BORDER_SIZE):
+    # 获取单张图片的宽高并添加白边
+    width, height = images[0].size
+    bordered_width = int(width + 2 * border_size)
+    bordered_height = int(height + 2 * border_size)
+
+    # 计算拼贴图的总宽度和高度
+    collage_width = grid_size[0] * bordered_width
+    collage_height = grid_size[1] * bordered_height
+    collage = Image.new('RGB', (collage_width, collage_height), 'white')  # 创建白色背景拼贴图
+
+    for i, img in enumerate(images):
+        # 为每张图片添加白边
+        img_with_border = ImageOps.expand(img, border=int(border_size), fill='white')
+
+        # 计算图片在拼贴图中的位置
+        x = (i % grid_size[0]) * bordered_width
+        y = (i // grid_size[0]) * bordered_height
+        collage.paste(img_with_border, (x, y))  # 将图片粘贴到拼贴图中
+
+    collage.save(output_path)  # 保存拼贴图
+
+# 处理视频文件
+def process_videos(input_folder, output_folder):
+    if not os.path.exists(output_folder):  # 如果输出文件夹不存在，则创建
+        os.makedirs(output_folder)
+    
+    for file_name in os.listdir(input_folder):  # 遍历输入文件夹中的所有文件
+        if file_name.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):  # 检查文件是否为视频格式
+            video_path = os.path.join(input_folder, file_name)  # 获取视频文件路径
+            output_path = os.path.join(output_folder, f"{os.path.splitext(file_name)[0]}_collage.jpg")  # 设置输出拼贴图路径
+            
+            print(f"Processing {file_name}...")  # 打印处理信息
+            images = extract_frames(video_path)  # 提取视频帧
+            create_collage(images, output_path)  # 创建拼贴图
+            print(f"Saved collage to {output_path}")  # 打印保存信息
+
+if __name__ == "__main__":
+    input_folder = os.path.abspath(os.path.dirname(__file__))  # 获取当前脚本所在文件夹作为输入文件夹
+    output_folder = os.path.join(input_folder, "output")  # 设置输出文件夹
+    process_videos(input_folder, output_folder)  # 处理视频文件
