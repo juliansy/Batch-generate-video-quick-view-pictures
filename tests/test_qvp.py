@@ -1,0 +1,607 @@
+"""Tests for qvp.py - pure logic first, then an end-to-end run on a real clip.
+
+Run from the repository root::
+
+    python -m unittest discover -s tests -v
+"""
+
+from __future__ import annotations
+
+import io
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import qvp  # noqa: E402
+
+FFMPEG = (qvp.ffmpeg_candidates() or [None])[0]
+
+
+def make_clip(path: Path, seconds: float = 4, size: str = "320x240", rate: int = 10) -> Path:
+    assert FFMPEG, "ffmpeg is required for the integration tests"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            FFMPEG, "-v", "error", "-f", "lavfi",
+            "-i", f"testsrc=duration={seconds}:size={size}:rate={rate}",
+            "-pix_fmt", "yuv420p", "-y", str(path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return path
+
+
+def run_main(argv: list[str]) -> tuple[int, str]:
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        code = qvp.main(argv)
+    return code, out.getvalue() + err.getvalue()
+
+
+class PureLogicTests(unittest.TestCase):
+    def test_parse_grid_accepts_common_separators(self):
+        self.assertEqual(qvp.parse_grid("4x4"), (4, 4))
+        self.assertEqual(qvp.parse_grid("4X4"), (4, 4))
+        self.assertEqual(qvp.parse_grid("2*3"), (2, 3))
+        self.assertEqual(qvp.parse_grid(" 2, 3 "), (2, 3))
+
+    def test_parse_grid_rejects_nonsense(self):
+        for bad in ("4", "0x4", "4x17", "axb", "-1x4"):
+            with self.subTest(bad=bad), self.assertRaises(qvp.UsageError):
+                qvp.parse_grid(bad)
+
+    def test_sample_times_span_the_whole_video(self):
+        times = qvp.sample_times(20.0, 4)
+        self.assertEqual(len(times), 4)
+        self.assertAlmostEqual(times[0], 1.0, places=3)       # a second in, not the fade
+        self.assertAlmostEqual(times[-1], 19.0, places=3)     # a second before the end
+        self.assertEqual(list(times), sorted(times))
+        for moment in times:
+            self.assertGreaterEqual(moment, 0)
+            self.assertLess(moment, 20.0)
+
+    def test_edge_inset_shrinks_for_short_clips(self):
+        times = qvp.sample_times(2.0, 2)                      # half the clip is too small an inset
+        self.assertAlmostEqual(times[0], 0.5, places=3)
+        self.assertAlmostEqual(times[-1], 1.5, places=3)
+
+    def test_sample_times_single_frame_lands_in_the_middle(self):
+        self.assertEqual(len(qvp.sample_times(10.0, 1)), 1)
+
+    def test_sample_times_last_one_never_hits_the_end(self):
+        times = qvp.sample_times(1.0, 16)
+        self.assertLessEqual(times[-1], 0.95)
+
+    def test_sample_times_respects_frame_rate(self):
+        times = qvp.sample_times(0.3, 4, fps=10)
+        self.assertLessEqual(times[-1], 0.16)
+        self.assertTrue(all(moment >= 0 for moment in times))
+
+    def test_sample_times_rejects_bad_input(self):
+        with self.assertRaises(qvp.UsageError):
+            qvp.sample_times(4.0, 0)
+        with self.assertRaises(qvp.ProbeError):
+            qvp.sample_times(0.0, 4)
+
+    def test_timecode_styles(self):
+        self.assertEqual(qvp.format_timecode(0), "00:00")
+        self.assertEqual(qvp.format_timecode(26.25), "00:26")
+        self.assertEqual(qvp.format_timecode(3661), "1:01:01")
+        self.assertEqual(qvp.format_timecode(59.6), "01:00")          # rounds up
+        self.assertEqual(qvp.format_timecode(3661, "hms"), "01:01:01")
+        self.assertEqual(qvp.format_timecode(3661, "ms"), "61:01")
+
+    def test_layout_geometry(self):
+        layout = qvp.layout_for(1920, 1080, (4, 4), 2)
+        self.assertEqual((layout.cell_w, layout.cell_h), (1924, 1084))
+        self.assertEqual(layout.canvas, (7696, 4336))
+        self.assertEqual(layout.cells, 16)
+        self.assertEqual(layout.pixels, 7696 * 4336)
+
+    def test_layout_rejects_empty_or_negative(self):
+        with self.assertRaises(qvp.ProbeError):
+            qvp.layout_for(0, 0, (4, 4), 2)
+        with self.assertRaises(qvp.UsageError):
+            qvp.layout_for(10, 10, (2, 2), -1)
+
+    def test_output_name_and_font_size(self):
+        self.assertEqual(qvp.output_name("clip"), "clip_collage.jpg")
+        self.assertEqual(qvp.font_size_for(1920), 42)
+        self.assertEqual(qvp.font_size_for(100), 12)
+        self.assertEqual(qvp.font_size_for(10000), 96)
+
+    def test_is_video(self):
+        self.assertTrue(qvp.is_video(Path("a.MP4")))
+        self.assertTrue(qvp.is_video(Path("a.webm")))
+        self.assertFalse(qvp.is_video(Path("a.txt")))
+        self.assertFalse(qvp.is_video(Path("a.mp4.txt")))
+
+    def test_colour_validation(self):
+        self.assertEqual(qvp.color_or_raise("red"), "red")
+        self.assertEqual(qvp.color_or_raise("#00ff00"), "#00ff00")
+        with self.assertRaises(qvp.UsageError):
+            qvp.color_or_raise("not-a-colour")
+
+    def test_short_error_keeps_one_line(self):
+        message = qvp.short_error(RuntimeError("Error opening input files:\n moov atom not found\n xx.mp4: Invalid data"))
+        self.assertNotIn("\n", message)
+        self.assertIn("moov atom not found", message)
+        self.assertLessEqual(len(message), 141)
+
+    def test_display_width_counts_wide_characters(self):
+        self.assertEqual(qvp.display_width("abc"), 3)
+        self.assertEqual(qvp.display_width("文件"), 4)
+        self.assertEqual(qvp.pad("文件", 6), "文件  ")
+
+    def test_report_counts_statuses(self):
+        results = [
+            qvp.Result("a.mp4", "ok", "", 1.0, 4, grid="2x2", canvas=(10, 10)),
+            qvp.Result("b.mp4", "skipped", "already exists"),
+            qvp.Result("c.mp4", "failed", "cannot open video (boom)"),
+        ]
+        report = qvp.render_report(results, 2.5)
+        self.assertIn("1 done, 1 skipped, 1 failed in 2.50s", report)
+        self.assertIn("skipped: already exists", report)
+        self.assertIn("failed: cannot open video (boom)", report)
+
+    def test_option_validation(self):
+        parser = qvp.build_parser()
+        bad = [
+            ["--frames", "0"],
+            ["--border", "-1"],
+            ["--jobs", "0"],
+            ["--max-pixels", "10"],
+            ["--font-size", "3"],
+        ]
+        for argv in bad:
+            with self.subTest(argv=argv):
+                args = parser.parse_args(argv)
+                with self.assertRaises(qvp.UsageError):
+                    qvp.options_from_args(args)
+
+    def test_version_flag_exits_zero(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = qvp.main(["--version"])
+        self.assertEqual(code, 0)
+        self.assertIn(qvp.VERSION, out.getvalue())
+
+
+class DiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="qvp-discovery-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_finds_sorts_and_dedupes(self):
+        (self.tmp / "b.mp4").write_bytes(b"")
+        (self.tmp / "A.MP4").write_bytes(b"")
+        (self.tmp / "notes.txt").write_bytes(b"")
+        (self.tmp / "sub").mkdir()
+        (self.tmp / "sub" / "c.mov").write_bytes(b"")
+        (self.tmp / "sub" / "deck.pptx").write_bytes(b"")
+
+        flat, missing = qvp.discover([self.tmp, self.tmp], recursive=False)
+        self.assertEqual([p.name for p in flat], ["A.MP4", "b.mp4"])
+        self.assertEqual(missing, [])
+
+        deep, _ = qvp.discover([self.tmp], recursive=True)
+        self.assertEqual([p.name for p in deep], ["A.MP4", "b.mp4", "c.mov"])
+
+    def test_reports_missing_and_non_video_arguments(self):
+        missing_file = self.tmp / "ghost"
+        text_file = self.tmp / "readme.txt"
+        text_file.write_text("x", encoding="utf-8")
+        found, missing = qvp.discover([missing_file, text_file], recursive=False)
+        self.assertEqual(found, [])
+        self.assertEqual(missing, [missing_file, text_file])
+
+
+class EndToEndTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not FFMPEG:
+            raise unittest.SkipTest("ffmpeg not available")
+        cls.base = Path(tempfile.mkdtemp(prefix="qvp-e2e-"))
+        cls.clip = make_clip(cls.base / "src" / "clip.mp4", seconds=4)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.base, ignore_errors=True)
+
+    def workdir(self, name: str) -> Path:
+        folder = self.base / name
+        if folder.exists():
+            shutil.rmtree(folder)
+        folder.mkdir(parents=True)
+        shutil.copy(self.clip, folder / "clip.mp4")
+        return folder
+
+    def test_renders_a_grid_of_the_expected_size(self):
+        folder = self.workdir("basic")
+        code, output = run_main([str(folder), "--frames", "4", "--grid", "2x2"])
+        self.assertEqual(code, 0, output)
+        sheet = folder / qvp.OUT_DIR_NAME / "clip_collage.jpg"
+        self.assertTrue(sheet.exists(), output)
+        from PIL import Image
+
+        with Image.open(sheet) as image:
+            self.assertEqual(image.size, (2 * (320 + 4), 2 * (240 + 4)))
+            # 时间戳是红字描黑边：左上角应该有红色像素
+            corner = image.crop((0, 0, 120, 60)).convert("RGB")
+            reds = [p for p in corner.getdata() if p[0] > 180 and p[1] < 90 and p[2] < 90]
+            self.assertGreater(len(reds), 20, "timecode was not drawn")
+        self.assertEqual(list((folder / qvp.OUT_DIR_NAME).glob(".tmp-*")), [])
+
+    def test_second_run_skips_and_force_rewrites(self):
+        folder = self.workdir("skip")
+        self.assertEqual(run_main([str(folder), "--frames", "4"])[0], 0)
+        sheet = folder / qvp.OUT_DIR_NAME / "clip_collage.jpg"
+        first = sheet.stat().st_mtime_ns
+        code, output = run_main([str(folder), "--frames", "4", "--batch-seek", "1"])
+        self.assertEqual(code, 0)
+        self.assertIn("skipped: already exists", output)
+        self.assertEqual(sheet.stat().st_mtime_ns, first)
+        self.assertEqual(run_main([str(folder), "--frames", "4", "--force"])[0], 0)
+        self.assertNotEqual(sheet.stat().st_mtime_ns, first)
+
+    def test_dry_run_writes_nothing(self):
+        folder = self.workdir("dry")
+        code, output = run_main([str(folder), "--frames", "4", "-n"])
+        self.assertEqual(code, 0)
+        self.assertIn("would write", output)
+        self.assertFalse((folder / qvp.OUT_DIR_NAME).exists())
+
+    def test_bad_file_does_not_stop_the_batch(self):
+        folder = self.workdir("bad")
+        (folder / "aaa_broken.mp4").write_bytes(b"not a video at all")
+        code, output = run_main([str(folder), "--frames", "4"])
+        self.assertEqual(code, 1, output)
+        self.assertTrue((folder / qvp.OUT_DIR_NAME / "clip_collage.jpg").exists())
+        self.assertIn("failed: cannot open video", output)
+
+    def test_frames_that_do_not_fit_the_grid_fail_loudly(self):
+        folder = self.workdir("overflow")
+        code, output = run_main([str(folder), "--frames", "9", "--grid", "2x2"])
+        self.assertEqual(code, 1)
+        self.assertIn("do not fit a 2x2 grid", output)
+
+    def test_pixel_budget_is_enforced(self):
+        folder = self.workdir("budget")
+        code, output = run_main([str(folder), "--frames", "4", "--grid", "16x16", "--max-pixels", "1000000"])
+        self.assertEqual(code, 1)
+        self.assertIn("over the 1 MP limit", output)
+
+    def test_recursive_finds_nested_videos(self):
+        folder = self.workdir("recursive")
+        nested = folder / "sub"
+        nested.mkdir()
+        shutil.copy(self.clip, nested / "deep.mp4")
+        code, _ = run_main([str(folder), "--frames", "4"])
+        self.assertEqual(code, 0)
+        self.assertFalse((nested / qvp.OUT_DIR_NAME).exists())
+        code, _ = run_main([str(folder), "--frames", "4", "-R"])
+        self.assertEqual(code, 0)
+        self.assertTrue((nested / qvp.OUT_DIR_NAME / "deep_collage.jpg").exists())
+
+    def test_two_sources_with_the_same_name_collide_loudly(self):
+        folder = self.workdir("collision")
+        other = folder / "other"
+        other.mkdir()
+        shutil.copy(self.clip, other / "clip.mp4")
+        out = folder / "shared"
+        code, output = run_main([str(folder), str(other), "--frames", "4", "-o", str(out), "-R"])
+        self.assertEqual(code, 1)
+        self.assertIn("output name clashes", output)
+
+    def test_jobs_and_log(self):
+        folder = self.workdir("jobs")
+        shutil.copy(self.clip, folder / "clip2.mp4")
+        log = folder / "run.log"
+        code, output = run_main([str(folder), "--frames", "4", "-j", "2", "--log", str(log), "-q"])
+        self.assertEqual(code, 0, output)
+        self.assertTrue((folder / qvp.OUT_DIR_NAME / "clip2_collage.jpg").exists())
+        self.assertIn("2 done", log.read_text(encoding="utf-8"))
+
+    def test_unicode_file_name(self):
+        folder = self.workdir("unicode")
+        target = folder / "课程 01 🎬.mp4"
+        shutil.copy(self.clip, target)
+        code, output = run_main([str(target), "--frames", "4"])
+        self.assertEqual(code, 0, output)
+        self.assertTrue((folder / qvp.OUT_DIR_NAME / "课程 01 🎬_collage.jpg").exists())
+
+    def test_missing_path_is_a_warning_not_a_crash(self):
+        code, output = run_main([str(self.base / "nope"), "-q"])
+        self.assertEqual(code, 0)
+        self.assertIn("no videos found", output)
+
+    def test_broken_ffmpeg_flag_falls_back_instead_of_failing(self):
+        folder = self.workdir("ffmpeg-fallback")
+        code, output = run_main([str(folder), "--frames", "4", "--ffmpeg", r"Z:\nope\ffmpeg.exe"])
+        self.assertEqual(code, 0, output)
+        self.assertTrue((folder / qvp.OUT_DIR_NAME / "clip_collage.jpg").exists())
+
+    def test_quiet_suppresses_progress_lines(self):
+        folder = self.workdir("quiet")
+        code, output = run_main([str(folder), "--frames", "4", "-q"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("[1/1]", output)
+        self.assertIn("1 done", output)
+
+    def test_report_keeps_input_order(self):
+        folder = self.workdir("order")
+        (folder / "aaa_broken.mp4").write_bytes(b"garbage")
+        code, output = run_main([str(folder), "--frames", "4"])
+        self.assertEqual(code, 1)
+        table = output[output.index("result") :]
+        self.assertLess(table.index("aaa_broken.mp4"), table.index("clip.mp4"))
+
+    def test_unusable_font_fails_the_file_not_the_batch(self):
+        folder = self.workdir("font")
+        code, output = run_main([str(folder), "--frames", "4", "--font", r"Z:\nope\font.ttf"])
+        self.assertEqual(code, 1)
+        self.assertIn("cannot load font", output)
+
+    def test_output_path_that_is_a_file_fails_cleanly(self):
+        folder = self.workdir("out-is-file")
+        blocker = folder / "not-a-folder"
+        blocker.write_text("x", encoding="utf-8")
+        code, output = run_main([str(folder), "--frames", "4", "-o", str(blocker)])
+        self.assertEqual(code, 1)
+        self.assertIn("cannot write output", output)
+
+    def test_very_short_video_still_renders(self):
+        folder = self.workdir("short")
+        make_clip(folder / "tiny.mp4", seconds=0.3)
+        code, output = run_main([str(folder / "tiny.mp4"), "--frames", "4"])
+        self.assertEqual(code, 0, output)
+        self.assertTrue((folder / qvp.OUT_DIR_NAME / "tiny_collage.jpg").exists())
+
+    def test_hms_time_format(self):
+        folder = self.workdir("hms")
+        code, output = run_main([str(folder), "--frames", "4", "--time-format", "hms"])
+        self.assertEqual(code, 0, output)
+        self.assertTrue((folder / qvp.OUT_DIR_NAME / "clip_collage.jpg").exists())
+
+    def test_invalid_grid_is_a_usage_error_not_a_traceback(self):
+        code, output = run_main(["--grid", "4x4x4"])
+        self.assertEqual(code, 2, output)
+        self.assertIn("invalid grid", output)
+        self.assertNotIn("Traceback", output)
+
+    def test_short_grid_flag(self):
+        folder = self.workdir("short-grid")
+        code, output = run_main([str(folder), "--frames", "4", "-g", "2x2"])
+        self.assertEqual(code, 0, output)
+
+    def test_redirected_stdout_with_emoji_name(self):
+        folder = self.workdir("emoji-redirect")
+        shutil.copy(self.clip, folder / "课程 🎬.mp4")
+        env = dict(os.environ, PYTHONIOENCODING="gbk", PYTHONUTF8="0")
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "qvp.py"), str(folder), "--frames", "4"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_dry_run_with_log_writes_nothing(self):
+        folder = self.workdir("dry-log")
+        log = folder / "run.log"
+        code, output = run_main([str(folder), "--frames", "4", "-n", "--log", str(log)])
+        self.assertEqual(code, 0, output)
+        self.assertFalse(log.exists())
+
+    def test_same_folder_spelled_twice_is_processed_once(self):
+        folder = self.workdir("twice")
+        code, output = run_main([str(folder), str(folder) + os.sep, ".", "--frames", "4"])
+        self.assertEqual(code, 0, output)
+        self.assertIn("1 done", output)
+
+    def test_frame_size_mismatch_fails_instead_of_painting_garbage(self):
+        from PIL import Image as PILImage
+        from unittest import mock
+
+        folder = self.workdir("mismatch")
+        with mock.patch.object(qvp, "grab_frame_ffmpeg", lambda *a, **k: PILImage.new("RGB", (10, 10))):
+            code, output = run_main([str(folder), "--frames", "4", "--batch-seek", "1"])
+        self.assertEqual(code, 1, output)
+        self.assertIn("does not match the probed", output)
+
+    def test_empty_report_does_not_crash(self):
+        self.assertEqual(qvp.render_report([], 0.1), "nothing to report")
+
+    def test_dry_run_summary_counts_planned(self):
+        folder = self.workdir("dry-count")
+        code, output = run_main([str(folder), "--frames", "4", "-n"])
+        self.assertEqual(code, 0)
+        self.assertIn("1 planned", output)
+        self.assertIn("0 done", output)
+
+    def test_no_temp_files_after_a_run(self):
+        folder = self.workdir("temps")
+        run_main([str(folder), "--frames", "4"])
+        leftovers = list((folder / qvp.OUT_DIR_NAME).glob(".*.tmp-*"))
+        self.assertEqual(leftovers, [])
+
+    def test_cells_are_different_pictures(self):
+        folder = self.workdir("cells")
+        self.assertEqual(run_main([str(folder), "--frames", "4", "-g", "2x2"])[0], 0)
+        from PIL import Image as PILImage
+
+        from PIL import Image as PILImage
+
+        with PILImage.open(folder / qvp.OUT_DIR_NAME / "clip_collage.jpg") as sheet:
+            width, height = sheet.size
+            cell_w, cell_h = width // 2, height // 2
+            first = sheet.crop((0, 0, cell_w, cell_h)).resize((32, 32)).tobytes()
+            second = sheet.crop((cell_w, 0, width, cell_h)).resize((32, 32)).tobytes()
+        self.assertNotEqual(first, second)
+
+    def test_auto_grid_picks_by_duration(self):
+        cases = [
+            (10, (2, 2)),
+            (20, (2, 2)),
+            (21, (3, 2)),
+            (40, (3, 2)),
+            (41, (3, 3)),
+            (60, (3, 3)),
+            (61, (4, 3)),
+            (180, (4, 3)),
+            (181, (4, 4)),
+            (300, (4, 4)),
+            (301, (5, 4)),
+            (720, (5, 4)),
+            (721, (5, 5)),
+            (7200, (5, 5)),
+        ]
+        for duration, grid in cases:
+            with self.subTest(duration=duration):
+                self.assertEqual(qvp.auto_grid(duration, 1920, 1080, 2, 200_000_000), grid)
+
+    def test_auto_grid_shrinks_to_fit_the_pixel_budget(self):
+        # 4K: 5x5 is 208 MP - just over the 200 MP default, so it drops to 5x4 (166 MP)
+        self.assertEqual(qvp.auto_grid(7200, 3840, 2160, 2, 200_000_000), (5, 4))
+        self.assertEqual(qvp.auto_grid(7200, 3840, 2160, 2, 210_000_000), (5, 5))
+        self.assertEqual(qvp.auto_grid(7200, 3840, 2160, 2, 170_000_000), (5, 4))
+        self.assertEqual(qvp.auto_grid(7200, 3840, 2160, 2, 150_000_000), (4, 4))
+        self.assertEqual(qvp.auto_grid(7200, 3840, 2160, 2, 110_000_000), (4, 3))
+
+    def test_grid_for_frames(self):
+        self.assertEqual(qvp.grid_for_frames(1), (2, 2))
+        self.assertEqual(qvp.grid_for_frames(4), (2, 2))
+        self.assertEqual(qvp.grid_for_frames(6), (3, 2))
+        self.assertEqual(qvp.grid_for_frames(9), (3, 3))
+        self.assertEqual(qvp.grid_for_frames(10), (4, 3))
+        self.assertEqual(qvp.grid_for_frames(20), (5, 4))
+        self.assertEqual(qvp.grid_for_frames(25), (5, 5))
+        with self.assertRaises(qvp.UsageError):
+            qvp.grid_for_frames(26)
+
+    def test_prints_a_banner_before_rendering(self):
+        folder = self.workdir("banner")
+        code, output = run_main([str(folder)])
+        self.assertEqual(code, 0, output)
+        lines = [line for line in output.splitlines() if line.strip()]
+        self.assertTrue(lines[0].startswith("qvp "), lines[:2])
+        self.assertIn("sheets/", lines[1], lines[:2])
+
+    def test_decode_plan_uses_cores_but_stays_bounded(self):
+        workers, threads = qvp.decode_plan(25)
+        self.assertGreaterEqual(workers, 1)
+        self.assertLessEqual(workers, qvp.MAX_DECODE_WORKERS)
+        self.assertEqual(workers * threads, (os.cpu_count() or 1) if workers > 1 else 0)
+        self.assertEqual(qvp.decode_plan(1), (1, 0))          # nothing to overlap
+        self.assertEqual(qvp.decode_plan(25, requested=1), (1, 0))
+        self.assertEqual(qvp.decode_plan(25, requested=2)[0], 2)
+        self.assertEqual(qvp.decode_plan(3, requested=8)[0], 3)  # never more workers than frames
+
+    def test_decode_workers_flag_changes_the_result_but_not_the_sheet(self):
+        folder = self.workdir("workers")
+        code, output = run_main([str(folder), "-f", "-g", "2x2", "--decode-workers", "2"])
+        self.assertEqual(code, 0, output)
+        from PIL import Image as PILImage
+
+        with PILImage.open(folder / qvp.OUT_DIR_NAME / "clip_collage.jpg") as sheet:
+            self.assertEqual(sheet.size, (2 * (320 + 4), 2 * (240 + 4)))
+
+    def test_seeks_per_process_defaults(self):
+        self.assertEqual(qvp.seeks_per_process("none", 0), 1)
+        self.assertEqual(qvp.seeks_per_process("cuda", 0), qvp.DEFAULT_GPU_BATCH_SEEK)
+        self.assertEqual(qvp.seeks_per_process("none", 3), 3)
+        self.assertEqual(qvp.seeks_per_process("cuda", 1), 1)
+
+    def test_bad_batch_seek_exits_2(self):
+        self.assertEqual(qvp.main(["--batch-seek", "99", "."]), 2)
+
+    def test_batched_and_per_frame_sheets_match(self):
+        batched = self.workdir("batch-default")
+        code, output = run_main([str(batched), "-f", "-g", "3x3", "--frames", "9"])
+        self.assertEqual(code, 0, output)
+        single = self.workdir("batch-one")
+        code, output = run_main([str(single), "-f", "-g", "3x3", "--frames", "9", "--batch-seek", "1"])
+        self.assertEqual(code, 0, output)
+
+        import numpy as np
+        from PIL import Image as PILImage
+
+        left = PILImage.open(next((batched / qvp.OUT_DIR_NAME).glob("*.jpg"))).convert("RGB")
+        right = PILImage.open(next((single / qvp.OUT_DIR_NAME).glob("*.jpg"))).convert("RGB")
+        self.assertEqual(left.size, right.size)
+        diff = np.abs(np.asarray(left, np.int16) - np.asarray(right, np.int16)).mean()
+        self.assertLess(float(diff), 1.0, "batched and per-frame sheets should match")
+
+    def test_hardware_modes_try_gpu_then_software(self):
+        self.assertEqual(qvp.hardware_modes(False), ("none",))
+        self.assertEqual(qvp.hardware_modes(True), ("cuda", "none"))
+
+    def test_old_hwaccel_option_is_gone(self):
+        self.assertEqual(qvp.main(["--hwaccel", "cuda", "."]), 2)
+
+    def test_gpu_failure_falls_back_to_software(self):
+        from unittest import mock
+
+        original = qvp.grab_frame_ffmpeg
+
+        def fake(video, moment, probe, binary, threads=0, hwaccel="none"):
+            if hwaccel == "cuda":
+                raise qvp.FrameError("no GPU here")
+            return original(video, moment, probe, binary, threads, "none")
+
+        folder = self.workdir("fallback")
+        with mock.patch.object(qvp, "grab_frame_ffmpeg", side_effect=fake):
+            code, output = run_main([str(folder), "-f", "--cuda"])
+        self.assertEqual(code, 0, output)
+        self.assertIn("software fallback", output)
+
+    def test_hardware_frame_matches_software(self):
+        """Only when the machine really has CUDA and QVP_TEST_CUDA=1."""
+        if os.environ.get("QVP_TEST_CUDA") != "1":
+            self.skipTest("set QVP_TEST_CUDA=1 to run the GPU comparison")
+        folder = self.workdir("gpu")
+        code, output = run_main([str(folder), "-f", "-g", "2x2", "--cuda"])
+        self.assertEqual(code, 0, output)
+        self.assertIn("ok (GPU)", output)
+
+        import numpy as np
+        from PIL import Image as PILImage
+
+        cpu_folder = self.workdir("gpu-cpu")
+        code, output = run_main([str(cpu_folder), "-f", "-g", "2x2"])
+        self.assertEqual(code, 0, output)
+        gpu_sheet = PILImage.open(next((folder / qvp.OUT_DIR_NAME).glob("*.jpg"))).convert("RGB")
+        cpu_sheet = PILImage.open(next((cpu_folder / qvp.OUT_DIR_NAME).glob("*.jpg"))).convert("RGB")
+        self.assertEqual(gpu_sheet.size, cpu_sheet.size)
+        diff = np.abs(np.asarray(gpu_sheet, np.int16) - np.asarray(cpu_sheet, np.int16)).mean()
+        self.assertLess(float(diff), 3.0, "GPU and software frames differ too much")
+
+    def test_bad_decode_workers_exits_2(self):
+        code = qvp.main(["--decode-workers", "99", "."])
+        self.assertEqual(code, 2)
+
+    def test_auto_grid_is_used_end_to_end(self):
+        folder = self.workdir("auto")
+        code, output = run_main([str(folder)])
+        self.assertEqual(code, 0, output)
+        from PIL import Image as PILImage
+
+        from PIL import Image as PILImage
+
+        with PILImage.open(folder / qvp.OUT_DIR_NAME / "clip_collage.jpg") as sheet:
+            self.assertEqual(sheet.size, (2 * (320 + 4), 2 * (240 + 4)))  # 4 s clip -> 2x2
+
+
+if __name__ == "__main__":
+    unittest.main()
