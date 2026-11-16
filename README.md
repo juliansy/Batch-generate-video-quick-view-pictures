@@ -161,7 +161,7 @@ Keep `--batch-seek` at its default (4 with `--cuda`), because one ffmpeg process
 
 ## Project docs
 
-Design, review and measurement notes, kept for anyone who wants the reasoning behind the defaults:
+Design, review and measurement notes, kept for anyone who wants the reasoning behind the defaults (written in Chinese):
 
 - [docs/01-decomposition.md](docs/01-decomposition.md) - the earlier script, line by line
 - [docs/02-review.md](docs/02-review.md) - its defects, with evidence
