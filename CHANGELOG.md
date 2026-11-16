@@ -2,7 +2,7 @@
 
 ## v2.7.1
 
-- README reorganised around usage: what the tool does, how to run it, one table for every flag, an output example and the limitations.
+- README condensed and reorganised around usage: what the tool does, how to run it, one table for every flag, an output example and the limitations.
 - Performance notes refer to test clips as A–H; no test-material names or local folder paths remain in the repository.
 
 ## v2.7.0
