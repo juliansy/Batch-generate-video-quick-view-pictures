@@ -13,7 +13,7 @@
 ![Python](https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-4C566A)
 ![moviepy](https://img.shields.io/badge/moviepy-2.x-2EA043)
-![License](https://img.shields.io/badge/license-GPL--3.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 [![Release](https://img.shields.io/github/v/release/juliansy/video-quick-view?color=orange&label=release)](https://github.com/juliansy/video-quick-view/releases)
 ![Stars](https://img.shields.io/github/stars/juliansy/video-quick-view?color=yellow)
 
@@ -146,4 +146,4 @@ Design, review and measurement documents behind the defaults (written in Chinese
 
 ## License
 
-GPL-3.0 — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.7.2
+
+- License changed from GPL-3.0 to MIT.
+
 ## v2.7.1
 
 - README condensed and reorganised around usage: what the tool does, how to run it, one table for every flag, an output example and the limitations.

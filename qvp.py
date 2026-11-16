@@ -75,7 +75,7 @@ GPU_CHUNK_WORKERS = 2     # concurrent GPU processes: more than this starts swap
 BORDER_SIZE = 2          # white border around every frame, in pixels
 TEXT_COLOR = "red"       # timecode colour
 
-VERSION = "2.7.1"
+VERSION = "2.7.2"
 JPEG_QUALITY = 85
 MAX_PIXELS = 200_000_000  # refuse to build a canvas bigger than this
 
