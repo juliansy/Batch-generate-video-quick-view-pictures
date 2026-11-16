@@ -150,7 +150,7 @@ class PureLogicTests(unittest.TestCase):
             qvp.Result("c.mp4", "failed", "cannot open video (boom)"),
         ]
         report = qvp.render_report(results, 2.5)
-        self.assertIn("1 done, 1 skipped, 1 failed in 2.50s", report)
+        self.assertIn("1 done, 1 skipped, 1 failed | 2.50s", report)
         self.assertIn("skipped: already exists", report)
         self.assertIn("failed: cannot open video (boom)", report)
 
@@ -295,15 +295,30 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue((nested / qvp.OUT_DIR_NAME / "deep_collage.jpg").exists())
 
-    def test_two_sources_with_the_same_name_collide_loudly(self):
+    def test_two_sources_with_the_same_name_skip_the_second(self):
         folder = self.workdir("collision")
         other = folder / "other"
         other.mkdir()
         shutil.copy(self.clip, other / "clip.mp4")
         out = folder / "shared"
         code, output = run_main([str(folder), str(other), "--frames", "4", "-o", str(out), "-R"])
-        self.assertEqual(code, 1)
-        self.assertIn("output name clashes", output)
+        self.assertEqual(code, 0, output)
+        self.assertIn("output name already used by clip.mp4", output)
+        self.assertIn("1 done", output)
+        self.assertIn("1 skipped", output)
+
+    def test_same_stem_two_extensions_skips_instead_of_failing(self):
+        folder = self.workdir("stemclash")
+        (folder / "clip.mp4").unlink()
+        shutil.copy(self.clip, folder / "talk.mp4")
+        shutil.copy(self.clip, folder / "talk.mkv")
+        code, output = run_main([str(folder), "--frames", "4"])
+        self.assertEqual(code, 0, output)
+        self.assertIn("skipped: output name already used by", output)
+        self.assertEqual(
+            sorted(p.name for p in (folder / qvp.OUT_DIR_NAME).iterdir()),
+            ["talk_collage.jpg"],
+        )
 
     def test_jobs_and_log(self):
         folder = self.workdir("jobs")

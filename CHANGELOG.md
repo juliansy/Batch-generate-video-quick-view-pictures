@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.7.3
+
+- Two videos with the same stem (`a.mp4`, `a.mkv`) now share one sheet: the first renders, the second is skipped with the reason, and the exit code stays `0`.
+- The summary line separates counts from elapsed time: `1 done, 1 skipped, 0 failed | 0.78s`.
+
 ## v2.7.2
 
 - License changed from GPL-3.0 to MIT.

@@ -102,7 +102,7 @@ python qvp.py -g 4x4 D:\Videos       # 固定网格，不用自动
 1  lecture-01.mp4  4x4   16      7696x4336  3.81s   ok
 2  talk-02.mp4     2x2   4       648x488    3.27s   ok
 
-2 done, 0 skipped, 0 failed in 7.7s
+2 done, 0 skipped, 0 failed | 7.7s
 ```
 
 `canvas` 是 JPEG 尺寸，`time` 是这个文件花的时间。控制台输出只有英文。
@@ -139,6 +139,7 @@ python qvp.py -g 4x4 D:\Videos       # 固定网格，不用自动
 - 片头片尾各跳过 1 秒。
 - 取帧要 seek：每次从前一个关键帧解到目标时刻，4K 即使在并行下也要几秒。
 - 只用画面，音频、字幕、封面不参与。
+- 同名不同扩展名（`talk.mp4`、`talk.mkv`）共用一个输出名：先生成的那个出图，第二个跳过；两个都要就改个名。
 
 ## 项目文档
 

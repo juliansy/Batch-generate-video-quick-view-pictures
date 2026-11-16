@@ -102,7 +102,7 @@ Exit codes: `0` ok, `1` some file failed, `2` bad arguments, `130` interrupted.
 1  lecture-01.mp4  4x4   16      7696x4336  3.81s   ok
 2  talk-02.mp4     2x2   4       648x488    3.27s   ok
 
-2 done, 0 skipped, 0 failed in 7.7s
+2 done, 0 skipped, 0 failed | 7.7s
 ```
 
 `canvas` is the JPEG size, `time` is how long that file took. Console output is English only.
@@ -139,6 +139,7 @@ Dense early, flatter later. A 4K 5×5 is 208 MP, over the default budget, so it 
 - The first and last second are skipped.
 - Seeking costs time: each frame decodes from the previous keyframe, so 4K sheets take seconds even in parallel.
 - Only the picture is used; audio, subtitles and cover art are ignored.
+- Two files with the same stem (`talk.mp4`, `talk.mkv`) share one sheet name: the first is rendered and the second is skipped, so rename one if you need both.
 
 ## Notes
 

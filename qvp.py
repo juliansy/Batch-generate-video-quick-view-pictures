@@ -75,7 +75,7 @@ GPU_CHUNK_WORKERS = 2     # concurrent GPU processes: more than this starts swap
 BORDER_SIZE = 2          # white border around every frame, in pixels
 TEXT_COLOR = "red"       # timecode colour
 
-VERSION = "2.7.2"
+VERSION = "2.7.3"
 JPEG_QUALITY = 85
 MAX_PIXELS = 200_000_000  # refuse to build a canvas bigger than this
 
@@ -808,7 +808,7 @@ def plan_job(video: Path, opts: Options) -> Job | Result:
 
 
 def plan_all(videos: Sequence[Path], opts: Options) -> list[Job | Result]:
-    """Plan every video and flag two jobs that would write the same file."""
+    """Plan every video, skipping a file whose sheet name is already taken."""
     items: list[Job | Result] = []
     seen: dict[str, str] = {}
     for video in videos:
@@ -816,11 +816,10 @@ def plan_all(videos: Sequence[Path], opts: Options) -> list[Job | Result]:
         if isinstance(item, Job):
             key = os.path.normcase(str(item.output.resolve()))
             if key in seen:
-                items.append(
-                    Result(video.name, "failed", f"output name clashes with {seen[key]}", output=item.output)
-                )
+                reason = f"output name already used by {seen[key]} (rename one if you need both)"
+                items.append(Result(video.name, "skipped", reason, output=item.output))
                 continue
-            seen[key] = str(video)
+            seen[key] = video.name
         items.append(item)
     return items
 
@@ -1073,7 +1072,7 @@ def render_report(results: Sequence[Result], elapsed: float) -> str:
         parts.append(f"{planned} planned")
     parts += [f"{skipped} skipped", f"{failed} failed"]
     lines.append("")
-    lines.append(", ".join(parts) + f" in {elapsed:.2f}s")
+    lines.append(f"{', '.join(parts)} | {elapsed:.2f}s")
     return "\n".join(lines)
 
 
