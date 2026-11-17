@@ -108,16 +108,16 @@ python qvp.py -g 4x4 "D:\Videos"          # 固定网格，不用自动
 ## 输出
 
 ```text
-qvp 2.9.5
+qvp 2.9.7
 2 video(s) | grid auto | sheets/ next to each video
 [1/2] lecture-01.mp4 … ok
 [2/2] talk-02.mp4 … ok
 #  file            grid  frames  canvas     time   result
 -  --------------  ----  ------  ---------  -----  ------
-1  lecture-01.mp4  4x3   12      5136x2172  1.13s  ok
-2  talk-02.mp4     2x2   4       2568x1448  0.41s  ok
+1  lecture-01.mp4  4x3   12      5136x2172  1.09s  ok
+2  talk-02.mp4     2x2   4       2568x1448  0.39s  ok
 
-2 done, 0 skipped, 0 failed | 1.75s
+2 done, 0 skipped, 0 failed | 1.67s
 ```
 
 `canvas` 是速览图的像素尺寸，`time` 是这个文件花的时间。标签和错误提示是英文；来自视频本身的报错沿用 ffmpeg 的原文。
@@ -171,6 +171,7 @@ qvp 2.9.5
 - 只用画面，音频、字幕、封面不参与。
 - 由不同分辨率片段拼成的文件（前段 720p、后段 1080p）会按探测尺寸缩放并补黑边，不拉伸。
 - 部分 MPEG-TS 录制在片尾附近对快速定位返回空帧，会自动改用较慢的精确 seek 重取，能出图，只是稍慢。
+- 旋转只认容器的显示矩阵（display matrix）。ffmpeg 自己忽略的 `rotate` 标签不会被采信，这类文件保持 ffmpeg 解出的方向。
 - 同名不同扩展名（`talk.mp4`、`talk.mkv`）共用一个输出名：排序在前的（`talk.mkv`）出图，另一个跳过；两个都要就改个名。
 
 ## 项目文档

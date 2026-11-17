@@ -108,16 +108,16 @@ Exit codes: `0` everything ok or skipped (an existing folder with no videos also
 ## Output
 
 ```text
-qvp 2.9.5
+qvp 2.9.7
 2 video(s) | grid auto | sheets/ next to each video
 [1/2] lecture-01.mp4 … ok
 [2/2] talk-02.mp4 … ok
 #  file            grid  frames  canvas     time   result
 -  --------------  ----  ------  ---------  -----  ------
-1  lecture-01.mp4  4x3   12      5136x2172  1.13s  ok
-2  talk-02.mp4     2x2   4       2568x1448  0.41s  ok
+1  lecture-01.mp4  4x3   12      5136x2172  1.09s  ok
+2  talk-02.mp4     2x2   4       2568x1448  0.39s  ok
 
-2 done, 0 skipped, 0 failed | 1.75s
+2 done, 0 skipped, 0 failed | 1.67s
 ```
 
 `canvas` is the sheet size in pixels, `time` is how long that file took. Labels and error text are English; a message coming from the video itself is passed through as ffmpeg phrased it.
@@ -171,6 +171,7 @@ Dense early, flatter later; a portrait sheet is chosen with one size comparison,
 - Only the picture is used; audio, subtitles and cover art are ignored.
 - A file spliced out of parts with different sizes (720p then 1080p) is fitted into the cell the probe reported, scaled and padded, never stretched.
 - Some MPEG-TS captures return nothing for a fast seek near the tail; the frame is retried with a slower accurate seek, so the file works but takes a little longer.
+- Rotation comes from the container display matrix. A bare `rotate` tag that ffmpeg itself ignores is not applied, so such a file keeps the orientation ffmpeg decodes.
 - Two files with the same stem (`talk.mp4`, `talk.mkv`) share one sheet name: the one that sorts first (`talk.mkv`) is rendered and the other is skipped, so rename one if you need both.
 
 ## Notes

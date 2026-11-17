@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.9.7
+
+- Rotation is read from the container display matrix only. The tag fallback added in v2.9.6 never ran - ffprobe was never asked for `stream_tags` - so it was dead code guarded by a test that re-implemented it. Both are gone, and a bare `rotate` tag that ffmpeg ignores is now a documented limitation instead of a claim.
+- `_rotation_value` also survives `inf` and integers too large for a float; both used to escape the probe and could still abort a batch.
+- Ctrl-C now stops queued work: a decode waiting for its semaphore slot raises instead of starting a fresh ffmpeg after the interrupt.
+- `decode_budget()` no longer takes an ignored `jobs` argument, and `qvp.py` and the tests are formatted at 100 columns.
+
+Note: v2.9.2 and v2.9.5 were internal builds folded into v2.9.3 and v2.9.6; neither was tagged, which is why the release list skips them.
+
 ## v2.9.6
 
 - Ctrl-C now ends a running ffmpeg instead of waiting for its timeout: the wait in the main thread is a short poll, so an interrupt is noticed at once and the child is killed.
