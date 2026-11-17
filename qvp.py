@@ -17,8 +17,8 @@ Inside, it is split into layers so each one can be tested on its own:
     defaults -> data model -> pure helpers -> discovery -> plan -> render
              -> report -> CLI
 
-Exit codes: 0 all ok or skipped, 1 at least one failure, 2 bad arguments,
-130 interrupted.
+Exit codes: 0 all ok or skipped, 1 at least one failure, 2 bad arguments or no
+usable input, 130 interrupted.
 """
 
 from __future__ import annotations
@@ -93,7 +93,7 @@ GPU_CHUNK_WORKERS = 2     # concurrent GPU processes: more than this starts swap
 BORDER_SIZE = 2          # white border around every frame, in pixels
 TEXT_COLOR = "red"       # timecode colour
 
-VERSION = "2.9.4"
+VERSION = "2.9.6"
 JPEG_QUALITY = 82         # 4:4:4 at 82 matches q85 4:2:0 in bytes, sharper on text
 JPEG_SUBSAMPLING = "4:4:4"  # chroma at full resolution: text survives compression
 AVIF_QUALITY = 60         # AVIF at 60 looks like JPEG at 84 and is ~3x smaller
@@ -367,29 +367,63 @@ _OS_ERROR_TEXT = {
 
 _RUNNING: set[subprocess.Popen] = set()
 _RUNNING_LOCK = threading.Lock()
+_DECODE_SLOTS: threading.BoundedSemaphore | None = None
+
+
+def configure_decode_budget(total: int) -> None:
+    """Cap how many ffmpeg processes may run at once for this whole run.
+
+    A per-video worker count cannot enforce this on its own: sixteen jobs that
+    each get one decoder are still sixteen decoders.
+    """
+    global _DECODE_SLOTS
+    _DECODE_SLOTS = threading.BoundedSemaphore(max(1, total))
 
 
 def run_tool(command: Sequence[str], timeout: float) -> tuple[int, bytes, bytes]:
-    """Run ffmpeg/ffprobe, keeping a handle so Ctrl-C can stop it.
+    """Run ffmpeg/ffprobe with a handle so Ctrl-C can stop it.
 
-    subprocess.run() hides the process, so an interrupt would wait for the
-    120 s (or 25 min batch) timeout before the children died. Registering the
-    handle lets kill_running() end them at once.
+    subprocess.run() hides the process, so an interrupt waits for the timeout
+    (120 s per frame, up to 25 min for a batch) before the child dies. Two
+    things are needed: the handle, so kill_running() can end it, and short
+    waits in the main thread, because a blocking communicate() only notices
+    Ctrl-C after the child exits.
     """
     extra = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **extra)
+    slots = _DECODE_SLOTS
+    if slots is not None:
+        slots.acquire()
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **extra)
+    except OSError:
+        if slots is not None:
+            slots.release()
+        raise
     with _RUNNING_LOCK:
         _RUNNING.add(process)
+    deadline = time.monotonic() + timeout
     try:
-        out, err = process.communicate(timeout=timeout)
-        return process.returncode, out, err
-    except subprocess.TimeoutExpired as exc:
+        while True:
+            try:
+                out, err = process.communicate(timeout=0.2)
+                return process.returncode, out, err
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    process.kill()
+                    process.communicate()
+                    raise FrameError(f"ffmpeg took too long ({timeout:g} s)")
+    except KeyboardInterrupt:
         process.kill()
-        process.communicate()
-        raise FrameError(f"ffmpeg took too long ({int(timeout)} s)") from exc
+        try:
+            process.communicate(timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        raise
     finally:
         with _RUNNING_LOCK:
             _RUNNING.discard(process)
+        if slots is not None:
+            slots.release()
 
 
 def kill_running() -> None:
@@ -501,6 +535,20 @@ def _rate(text: str) -> float:
     return value if math.isfinite(value) and value > 0 else 0.0
 
 
+def _rotation_value(raw: object) -> int:
+    """Rotation in degrees, or 0 when the metadata is missing or nonsense.
+
+    A container may carry `rotate: "abc"` (or a float); that must not take the
+    whole batch down, so anything unparsable counts as "no rotation".
+    """
+    if raw is None:
+        return 0
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _probe_ffprobe(path: Path, binary: str) -> Probe:
     command = [
         binary,
@@ -534,9 +582,10 @@ def _probe_ffprobe(path: Path, binary: str) -> Probe:
     rotation = 0
     for side in stream.get("side_data_list") or []:
         if "rotation" in side:
-            rotation = int(side["rotation"])
+            rotation = _rotation_value(side["rotation"])
     if not rotation:
-        rotation = int((stream.get("tags") or {}).get("rotate") or 0)
+        tags = {str(key).lower(): value for key, value in (stream.get("tags") or {}).items()}
+        rotation = _rotation_value(tags.get("rotate"))
     if rotation % 180 == 90:
         width, height = height, width
     codec = str(stream.get("codec_name") or "")
@@ -740,16 +789,19 @@ def decode_plan(frame_count: int, requested: int = 0) -> tuple[int, int]:
     return workers, 0
 
 
-def worker_budget(jobs: int, requested: int = 0) -> int:
-    """Decode processes one render may start, given the whole-run budget.
-
-    `--jobs 4` used to multiply the per-video plan, so four videos each sized
-    against every core could start sixteen ffmpeg processes. The budget is
-    shared instead: total decoders stay around cpu/4 whatever `-j` says.
-    """
+def decode_budget(jobs: int, requested: int = 0) -> int:
+    """How many ffmpeg processes the whole run may have alive at once."""
     cpu = os.cpu_count() or 1
-    total = requested if requested > 0 else max(1, min(MAX_DECODE_WORKERS, cpu // 4))
-    return max(1, total // max(1, jobs))
+    return requested if requested > 0 else max(1, min(MAX_DECODE_WORKERS, cpu // 4))
+
+
+def worker_budget(jobs: int, requested: int = 0) -> int:
+    """Decode processes one render asks for, given the shared budget.
+
+    The semaphore in run_tool() enforces the total; this only keeps a single
+    render from asking for the whole budget when several run in parallel.
+    """
+    return max(1, decode_budget(jobs, requested) // max(1, jobs))
 
 
 def hardware_modes(use_cuda: bool) -> tuple[str, ...]:
@@ -874,10 +926,14 @@ def frame_source(
                 state["mode"] = "none"
                 if used is not None:
                     used["mode"] = "none"
-                return grab_frame_ffmpeg(job.video, moment, job.probe, state["binary"], cap, "none")
+                return grab_frame_ffmpeg(
+                    job.video, moment, job.probe, state["binary"], cap, "none", state["normalize"], state
+                )
             if moment <= back:
                 raise
-            return grab_frame_ffmpeg(job.video, moment - back, job.probe, state["binary"], cap, "none")
+            return grab_frame_ffmpeg(
+                job.video, moment - back, job.probe, state["binary"], cap, "none", state["normalize"], state
+            )
 
     def chunk_frames(chunk: Sequence[float], folder: Path, threads: int) -> list[Image.Image]:
         try:
@@ -1086,7 +1142,7 @@ def fit_frame(image: Image.Image, size: tuple[int, int]) -> Image.Image:
     return canvas
 
 
-def render_job(job: Job, opts: Options) -> Result:
+def render_job(job: Job, opts: Options, workers: int | None = None) -> Result:
     started = time.perf_counter()
     layout = job.layout
     canvas_size = layout.canvas
@@ -1102,7 +1158,7 @@ def render_job(job: Job, opts: Options) -> Result:
         with frame_source(
             job,
             ffmpeg_candidates(opts.ffmpeg),
-            worker_budget(opts.jobs, opts.decode_workers),
+            workers if workers is not None else worker_budget(1, opts.decode_workers),
             opts.cuda,
             used,
             opts.batch_seek,
@@ -1176,11 +1232,16 @@ def replace_with_retry(source: Path, target: Path, attempts: int = 4) -> None:
 _SCANNED: set[str] = set()
 
 
+_TEMP_NAME = re.compile(r"^\..+\.tmp-\d+-[0-9a-f]{8}$")
+
+
 def clean_stale_temps(output: Path, max_age: float = 3600.0) -> None:
     """Remove temp files left behind by a killed run (older than an hour).
 
-    One scan per output folder per run: the check used to repeat for every
-    video, which is quadratic when a thousand sheets land in one folder.
+    One scan per output folder per run, and every stale temp of that folder is
+    collected - not just the one belonging to the current sheet: the scan is
+    shared, so filtering by name would leave the other sheets' leftovers
+    behind for the rest of the run.
     """
     key = os.path.normcase(str(output.parent))
     if key in _SCANNED:
@@ -1188,16 +1249,17 @@ def clean_stale_temps(output: Path, max_age: float = 3600.0) -> None:
     _SCANNED.add(key)
     now = time.time()
     try:
-        for item in output.parent.iterdir():
-            if not item.name.startswith(f".{output.name}.tmp-"):
-                continue
-            try:
-                if now - item.stat().st_mtime > max_age:
-                    item.unlink(missing_ok=True)
-            except OSError:
-                continue
+        entries = list(output.parent.iterdir())
     except OSError:
         return
+    for item in entries:
+        if not _TEMP_NAME.match(item.name):
+            continue
+        try:
+            if now - item.stat().st_mtime > max_age:
+                item.unlink(missing_ok=True)
+        except OSError:
+            continue
 
 
 def finish_failure(job: Job, tmp: Path, started: float, reason: str) -> Result:
@@ -1287,8 +1349,10 @@ def render_all(items: Sequence[Job | Result], opts: Options) -> list[Result]:
     planned = [(index, item) for index, item in enumerate(items) if isinstance(item, Job)]
     if not planned:
         return [item for item in items if isinstance(item, Result)]
+    configure_decode_budget(decode_budget(min(opts.jobs, len(planned)), opts.decode_workers))
 
     rendered: dict[int, Result] = {}
+    interrupted = False
     if opts.jobs > 1 and len(planned) > 1:
         pool = ThreadPoolExecutor(max_workers=opts.jobs)
         futures = [pool.submit(render_job, job, opts) for _, job in planned]
@@ -1303,19 +1367,23 @@ def render_all(items: Sequence[Job | Result], opts: Options) -> list[Result]:
                 if not opts.quiet:
                     print(f"[{rendered[index].status}] {items[index].name}")
         except KeyboardInterrupt:
+            interrupted = True
             kill_running()
-            pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
-            pool.shutdown(wait=True)
+            pool.shutdown(wait=not interrupted, cancel_futures=True)
     else:
-        for position, (index, job) in enumerate(planned, 1):
-            if not opts.quiet:
-                print(f"[{position}/{len(planned)}] {job.name} … ", end="", flush=True)
-            result = render_job(job, opts)
-            rendered[index] = result
-            if not opts.quiet:
-                print(result.status)
+        try:
+            for position, (index, job) in enumerate(planned, 1):
+                if not opts.quiet:
+                    print(f"[{position}/{len(planned)}] {job.name} … ", end="", flush=True)
+                result = render_job(job, opts, worker_budget(min(opts.jobs, len(planned)), opts.decode_workers))
+                rendered[index] = result
+                if not opts.quiet:
+                    print(result.status)
+        except KeyboardInterrupt:
+            kill_running()
+            raise
     return [
         rendered[index] if isinstance(item, Job) else item
         for index, item in enumerate(items)
@@ -1412,7 +1480,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--time-format",
         choices=("auto", "hms", "ms"),
         default="auto",
-        help="timecode style: auto (00:26 / 1:01:05), hms (00:00:26), ms (minutes:seconds, 26:00)",
+        help="timecode style: auto (00:26 / 1:01:05), hms (00:00:26), ms (minutes:seconds: 3661 s is 61:01)",
     )
     parser.add_argument("-R", "--recursive", action="store_true", help="also look in subfolders")
     parser.add_argument("-j", "--jobs", type=int, default=1, help="videos to render at once (default: 1)")

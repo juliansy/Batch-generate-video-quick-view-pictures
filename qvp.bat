@@ -26,6 +26,6 @@ set "RC=%errorlevel%"
 
 if "%RC%"=="1" echo.
 if "%RC%"=="1" echo One or more files failed; the table above says why.
-if "%RC%"=="2" echo Bad arguments or a missing dependency.
+if "%RC%"=="2" echo Bad arguments, no usable input, or a missing dependency.
 if not defined QVP_NOPAUSE pause
 exit /b %RC%

@@ -8,7 +8,7 @@
 |---|---|---|
 | `cProfile` + `pstats` | Python 层函数耗时（`tottime` / `cumtime`） | 确认 Python 侧几乎没有耗时，大头在 `subprocess` 等待 |
 | 分段计时（monkeypatch `probe_video`、`grab_frame_ffmpeg`、`Image.save`） | 把一次渲染拆成 探测 / 解码 / 描边 / 拼贴 / 编码 | 解码占 92–94% |
-| `ThreadPoolExecutor` 微基准 | 并行解码的 worker × threads 组合 | 4 进程 × 4 线程最优 |
+| `ThreadPoolExecutor` 微基准 | 并行解码的 worker × threads 组合 | 4 进程最优（线程数交给 ffmpeg） |
 | `python -X importtime` | 冷启动导入耗时 | PIL ~110 ms，moviepy 已改为懒加载 |
 | `time.perf_counter` / 行级时间戳包装器 | 首行输出延迟、阶段墙钟 | 0.13 s 出横幅 |
 
@@ -43,7 +43,7 @@ cProfile 的 `tottime` 前三名是 `BufferedReader.read`（12.7 s，读 ffmpeg 
 | 4 | 4 | 7.57 s | 631 ms |
 | 6 | 3 | 7.46 s | 621 ms |
 
-规则：`workers = min(4, cpu/4, 帧数)`，`threads = cpu / workers`，默认开启，`--decode-workers N` 可覆盖（1 = 退回串行）。取帧线程池保持“领先合成器 workers+1 帧”的窗口，内存只多几帧（4K 每帧 25 MB）。
+规则：`workers = min(4, cpu/4, 帧数)`，`threads = 0`（交给 ffmpeg 自己决定；v2.9 实测把每进程线程限到 cpu/workers 反而从 13 s 慢到 19 s），默认开启，`--decode-workers N` 可覆盖（1 = 退回串行）。取帧线程池保持“领先合成器 workers+1 帧”的窗口，内存只多几帧（4K 每帧 25 MB）。
 
 端到端（v2.2 串行 → v2.3 默认）：
 
@@ -138,7 +138,7 @@ cProfile 的 `tottime` 前三名是 `BufferedReader.read`（12.7 s，读 ffmpeg 
 
 - **解码仍是 90%+**：这是“精确到秒地从任意位置取一帧”的固有成本。要再快只能牺牲精度（取关键帧）或依赖硬件，两样都不做默认。
 - JPEG 编码 208 MP 约 0.35 s（v2.3 设置）、白底分配 0.43 s，合计 <10%，不值得为它们增加复杂度。v2.9 换成 4:4:4 + 渐进式后编码升到约 1.7 s/166 MP，仍远小于解码，换来时间码不糊。
-- 内存：4K 5×5 画布 624 MB，加上并行解码的几帧，峰值约 2.5 GB。8 GB 机器上建议 `--decode-workers 1` 或 `--max-pixels` 限一档。
+- 内存：4K 5×5 画布 624 MB，加上并行解码的几帧，峰值约 2.2 GB（约 11 字节/像素，实测）。8 GB 机器上建议 `--decode-workers 1` 或 `--max-pixels` 限一档。
 
 ## 8. 复现
 
@@ -146,7 +146,7 @@ cProfile 的 `tottime` 前三名是 `BufferedReader.read`（12.7 s，读 ffmpeg 
 python tools/bench_profile.py "D:\Videos\clip.mp4"      # 分段 + cProfile + 热点
 python tools/bench_decode.py "D:\Videos\a.mp4" "D:\Videos\b.mp4"   # 串行 vs 并行
 python qvp.py -V                                         # 版本
-python -m unittest discover -s tests                     # 57 个用例
+python -m unittest discover -s tests                     # 96 个用例
 ```
 
 基准只用 CPU、一次只起一个基准进程、ffmpeg 输出到 `NUL`；不要在这些基准里加硬件解码参数——那会和其他使用 GPU 的程序抢显存。

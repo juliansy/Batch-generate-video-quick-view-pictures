@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.9.6
+
+- Ctrl-C now ends a running ffmpeg instead of waiting for its timeout: the wait in the main thread is a short poll, so an interrupt is noticed at once and the child is killed.
+- A container with unreadable rotation metadata (`rotate: "abc"`) is decoded normally instead of aborting the whole batch with a `ValueError`; the tag lookup is also case-insensitive, so MKV's `ROTATE` is honoured.
+- The decode budget is a run-wide semaphore: `-j 16` no longer starts sixteen decoders, and one video with `-j 4` gets the whole budget instead of a quarter of it.
+- The batch-seek test now asserts that the batched decoder really ran, instead of passing with it disabled.
+- `--time-format` help shows a real example (`3661 s` is `61:01`).
+
+## v2.9.5
+
+- Stale temp files of every sheet in a folder are cleaned on the single folder scan again; the scan had been narrowed to the current sheet, so other sheets' leftovers survived.
+- Ctrl-C also stops ffmpeg on the default single-job path, and an interrupted run no longer waits for its worker pool before exiting.
+- README: the sample transcript is from this version, `--frames` documents its 25-frame limit, the 4K 4x4 memory figure matches the measured 11 bytes per pixel, and the exit-code line explains when a missing path is only a warning.
+- docs/07 (declared current) now matches the code on threads, test count and the 208 MP memory peak; the grid spelling list has `4×4` back.
+- `requirements.txt` says that Pillow 11.3 is only needed for `--format avif`.
+
+## v2.9.4
+
+- After the first frame that needs scaling (a file spliced out of differently sized parts), the rest of that file goes straight to the scaling decoder instead of decoding every high-resolution frame twice.
+- The "same folder spelled twice" test uses a temp folder instead of the working directory, so it cannot touch whatever is in the current directory when the suite runs.
+
 ## v2.9.3
 
 - Rotation metadata is honoured: a clip tagged 90 degrees is probed upright and its cells match the decoded frames, instead of being transposed inside a landscape cell.
@@ -26,7 +47,7 @@
 - Frames that come back empty are retried with a slower accurate seek: MPEG-TS captures that failed with `Missing reference picture` now render. Healthy files keep the fast path.
 - Files spliced out of differently sized parts (720p then 1080p) are scaled into the cell and padded instead of failing with `frame ... does not match the probed ...`.
 - Portrait videos get their own ladder, from `4x1` for 6 s clips to `8x3` beyond 3 minutes; detected with one size comparison, no extra probe.
-- Grids accept `4x4`, `4X4`, `4*4`, `4x4` and `4,4`; the docs and the report use `4x4` everywhere.
+- Grids accept `4x4`, `4X4`, `4*4`, `4×4` and `4,4`; the docs and the report use `4x4` everywhere.
 
 ## v2.7.3
 

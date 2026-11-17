@@ -1,2 +1,3 @@
 moviepy>=2.0
+# pillow>=11.3 is only needed for --format avif
 pillow>=10.0

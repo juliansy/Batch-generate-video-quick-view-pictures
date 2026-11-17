@@ -81,7 +81,7 @@ python qvp.py -g 4x4 "D:\Videos"          # fixed grid instead of auto
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `-o, --out DIR` | `<video folder>/sheets` | where sheets go |
-| `--frames N` | one per cell | frames per video; picks the smallest grid that holds them |
+| `--frames N` | one per cell | frames per video; picks the smallest grid that holds them (up to 25 - more needs an explicit `--grid`) |
 | `-g, --grid CxR` | `auto` | columns x rows (`4x4`, `4*4`, `4×4`, `4,4` all work), or `auto` |
 | `-b, --border PX` | 2 | white border around each frame |
 | `-c, --color C` | `red` | timecode colour |
@@ -103,21 +103,21 @@ python qvp.py -g 4x4 "D:\Videos"          # fixed grid instead of auto
 | `-q, --quiet` | off | summary line only |
 | `-V, --version` | — | print the version |
 
-Exit codes: `0` everything ok or skipped (an existing folder with no videos also exits `0`), `1` at least one file failed, `2` bad arguments, a path that does not exist, or no ffmpeg/moviepy, `130` interrupted.
+Exit codes: `0` everything ok or skipped (an existing folder with no videos also exits `0`; a path that does not exist is only a warning while other inputs remain), `1` at least one file failed, `2` bad arguments, no usable input at all, or no ffmpeg/moviepy, `130` interrupted.
 
 ## Output
 
 ```text
-qvp 2.9.2
+qvp 2.9.5
 2 video(s) | grid auto | sheets/ next to each video
 [1/2] lecture-01.mp4 … ok
 [2/2] talk-02.mp4 … ok
 #  file            grid  frames  canvas     time   result
 -  --------------  ----  ------  ---------  -----  ------
-1  lecture-01.mp4  4x3   12      5136x2172  1.03s  ok
-2  talk-02.mp4     2x2   4       2568x1448  0.38s  ok
+1  lecture-01.mp4  4x3   12      5136x2172  1.13s  ok
+2  talk-02.mp4     2x2   4       2568x1448  0.41s  ok
 
-2 done, 0 skipped, 0 failed | 1.59s
+2 done, 0 skipped, 0 failed | 1.75s
 ```
 
 `canvas` is the sheet size in pixels, `time` is how long that file took. Labels and error text are English; a message coming from the video itself is passed through as ffmpeg phrased it.
@@ -132,7 +132,7 @@ qvp 2.9.2
 | up to 3 min | 4x3 | 12 | 15 |
 | up to 5 min | 4x4 | 16 | 19 |
 | up to 12 min | 5x4 | 20 | 36 |
-| over 12 min | 5x5 | 25 | 29-72+ |
+| over 12 min | 5x5 | 25 | 29–72+ |
 
 Portrait (taller than wide — short vertical video packs more per second, so the
 cells stay tall and the rows come slowly):
@@ -157,7 +157,7 @@ Dense early, flatter later; a portrait sheet is chosen with one size comparison,
 
 ## Safety
 
-- Inputs are only read. Sheets are written to a temp file, verified, then swapped in atomically.
+- Inputs are only read. Sheets are written to a temp file, checked (JPEG is decoded once at 1/8 size; AVIF is only checked at the container level), then swapped in atomically.
 - One broken video does not stop the batch: it is reported as `failed`, the rest continue, exit code `1`.
 - Existing sheets are skipped unless `--force`.
 - The only files removed are its own `.tmp-*` leftovers, and only when they are over an hour old.
@@ -165,7 +165,7 @@ Dense early, flatter later; a portrait sheet is chosen with one size comparison,
 ## Limitations
 
 - Frames are taken at fixed intervals, not on scene changes.
-- One image per video at source resolution: 4x4 of 4K is ~133 MP and needs ~1 GB RAM; `--format avif` shrinks the file, not the memory.
+- One image per video at source resolution: 4x4 of 4K is ~133 MP and needs ~1.4 GB RAM; `--format avif` shrinks the file, not the memory.
 - The first and last second are skipped; clips under 4 s use a quarter of their length instead.
 - Seeking costs time: each frame decodes from the previous keyframe, so 4K sheets take seconds even in parallel.
 - Only the picture is used; audio, subtitles and cover art are ignored.

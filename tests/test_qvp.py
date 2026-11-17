@@ -7,13 +7,17 @@ Run from the repository root::
 
 from __future__ import annotations
 
+import _thread
 import io
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -580,8 +584,17 @@ class EndToEndTests(unittest.TestCase):
 
     def test_batched_and_per_frame_sheets_match(self):
         batched = self.workdir("batch-default")
-        code, output = run_main([str(batched), "-f", "-g", "3x3", "--frames", "9", "--batch-seek", "4"])
+        calls = []
+        real = qvp.extract_chunk
+
+        def counting(*args, **kwargs):
+            calls.append(1)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(qvp, "extract_chunk", counting):
+            code, output = run_main([str(batched), "-f", "-g", "3x3", "--frames", "9", "--batch-seek", "4"])
         self.assertEqual(code, 0, output)
+        self.assertTrue(calls, "the batch path was never used, so this proves nothing")
         single = self.workdir("batch-one")
         code, output = run_main([str(single), "-f", "-g", "3x3", "--frames", "9", "--batch-seek", "1"])
         self.assertEqual(code, 0, output)
@@ -901,15 +914,18 @@ class AuditFixTests(unittest.TestCase):
         folder = Path(tempfile.mkdtemp(prefix="qvp-stale-"))
         try:
             output = folder / "clip_collage.jpg"
-            old = folder / ".clip_collage.jpg.tmp-1-old"
-            fresh = folder / ".clip_collage.jpg.tmp-2-fresh"
-            old.write_text("x", encoding="utf-8")
-            fresh.write_text("x", encoding="utf-8")
+            old = folder / ".clip_collage.jpg.tmp-1111-abcdef12"
+            fresh = folder / ".clip_collage.jpg.tmp-2222-abcdef34"
+            other = folder / ".talk_collage.jpg.tmp-3333-abcdef56"
+            for item in (old, fresh, other):
+                item.write_text("x", encoding="utf-8")
             two_hours = _time.time() - 7200
             os.utime(old, (two_hours, two_hours))
+            os.utime(other, (two_hours, two_hours))
             qvp.clean_stale_temps(output)
-            self.assertFalse(old.exists())
-            self.assertTrue(fresh.exists())
+            self.assertFalse(old.exists(), "this sheet's stale temp goes")
+            self.assertFalse(other.exists(), "another sheet's stale temp goes too")
+            self.assertTrue(fresh.exists(), "a recent temp is left alone")
         finally:
             shutil.rmtree(folder, ignore_errors=True)
 
@@ -1000,6 +1016,124 @@ class WorkerBudgetTests(unittest.TestCase):
         self.assertEqual(qvp.worker_budget(1, requested=4), 4)
         self.assertEqual(qvp.worker_budget(4, requested=4), 1)
         self.assertEqual(qvp.worker_budget(2, requested=4), 2)
+
+
+class InterruptTests(unittest.TestCase):
+    def job(self, name: str) -> "qvp.Job":
+        probe = qvp.Probe(320, 240, 1.0, 10.0, "h264")
+        layout = qvp.layout_for(320, 240, (2, 2), qvp.BORDER_SIZE)
+        return qvp.Job(Path(name), Path(name + ".jpg"), probe, layout, (0.2, 0.6, 0.9, 1.0))
+
+    def test_interrupt_on_the_sequential_path_stops_children(self):
+        from unittest import mock
+
+        killed = []
+        opts = qvp.Options(paths=[Path(".")], jobs=1, quiet=True)
+        with mock.patch.object(qvp, "render_job", side_effect=KeyboardInterrupt), \
+             mock.patch.object(qvp, "kill_running", lambda: killed.append(True)):
+            with self.assertRaises(KeyboardInterrupt):
+                qvp.render_all([self.job("a.mp4")], opts)
+        self.assertEqual(killed, [True])
+
+    def test_interrupt_on_the_parallel_path_stops_children(self):
+        from unittest import mock
+
+        killed = []
+        opts = qvp.Options(paths=[Path(".")], jobs=2, quiet=True)
+        with mock.patch.object(qvp, "render_job", side_effect=KeyboardInterrupt), \
+             mock.patch.object(qvp, "kill_running", lambda: killed.append(True)):
+            with self.assertRaises(KeyboardInterrupt):
+                qvp.render_all([self.job("a.mp4"), self.job("b.mp4")], opts)
+        self.assertEqual(killed, [True])
+
+
+class ToolRunTests(unittest.TestCase):
+    def test_run_tool_stops_when_the_user_interrupts(self):
+        timer = threading.Timer(0.6, _thread.interrupt_main)
+        timer.start()
+        started = time.perf_counter()
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                qvp.run_tool([sys.executable, "-c", "import time; time.sleep(5)"], 30)
+        finally:
+            timer.cancel()
+        self.assertLess(time.perf_counter() - started, 3.0, "waited for the child instead of polling")
+        qvp.kill_running()
+        self.assertEqual(len(qvp._RUNNING), 0, "the child was left registered")
+
+    def test_decode_budget_caps_concurrent_tools(self):
+        live = {"now": 0, "peak": 0}
+        guard = threading.Lock()
+
+        class Stub:
+            def __init__(self, command, **kwargs):
+                self.done = False
+                self.returncode = 0
+                with guard:
+                    live["now"] += 1
+                    live["peak"] = max(live["peak"], live["now"])
+
+            def communicate(self, timeout=None):
+                time.sleep(0.05)
+                self.finish()
+                return b"", b""
+
+            def kill(self):
+                pass
+
+            def finish(self):
+                if not self.done:
+                    self.done = True
+                    with guard:
+                        live["now"] -= 1
+
+            def poll(self):
+                return None
+
+        qvp.configure_decode_budget(2)
+        try:
+            with mock.patch.object(qvp.subprocess, "Popen", Stub):
+                threads = [
+                    threading.Thread(target=qvp.run_tool, args=(["ffmpeg", "-version"], 10))
+                    for _ in range(6)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(30)
+        finally:
+            qvp.configure_decode_budget(qvp.decode_budget(1))
+        self.assertLessEqual(live["peak"], 2, "more decoders ran than the run allows")
+
+    def test_one_video_with_jobs_four_still_gets_the_whole_budget(self):
+        self.assertEqual(qvp.worker_budget(1), qvp.decode_budget(1, 0))
+        self.assertEqual(qvp.worker_budget(1, 4), 4)
+
+
+class RotationMetadataTests(unittest.TestCase):
+    def test_unreadable_rotation_counts_as_none(self):
+        for raw in ("abc", "", None, object()):
+            self.assertEqual(qvp._rotation_value(raw), 0)
+        self.assertEqual(qvp._rotation_value("90"), 90)
+        self.assertEqual(qvp._rotation_value(270.0), 270)
+
+    def test_rotation_tag_is_found_whatever_the_case(self):
+        stream = {"width": 1920, "height": 1080, "tags": {"ROTATE": "90"}, "side_data_list": []}
+        self.assertEqual(_swap_for_rotation(stream), (1080, 1920))
+
+
+def _swap_for_rotation(stream: dict) -> tuple[int, int]:
+    rotation = 0
+    for side in stream.get("side_data_list") or []:
+        if "rotation" in side:
+            rotation = qvp._rotation_value(side["rotation"])
+    if not rotation:
+        tags = {str(key).lower(): value for key, value in (stream.get("tags") or {}).items()}
+        rotation = qvp._rotation_value(tags.get("rotate"))
+    width, height = int(stream["width"]), int(stream["height"])
+    if rotation % 180 == 90:
+        return height, width
+    return width, height
 
 
 if __name__ == "__main__":
