@@ -93,7 +93,7 @@ GPU_CHUNK_WORKERS = 2     # concurrent GPU processes: more than this starts swap
 BORDER_SIZE = 2          # white border around every frame, in pixels
 TEXT_COLOR = "red"       # timecode colour
 
-VERSION = "2.9.3"
+VERSION = "2.9.4"
 JPEG_QUALITY = 82         # 4:4:4 at 82 matches q85 4:2:0 in bytes, sharper on text
 JPEG_SUBSAMPLING = "4:4:4"  # chroma at full resolution: text survives compression
 AVIF_QUALITY = 60         # AVIF at 60 looks like JPEG at 84 and is ~3x smaller
@@ -679,6 +679,7 @@ def grab_frame_ffmpeg(
     threads: int = 0,
     hwaccel: str = "none",
     prefer_normalize: bool = False,
+    hint: dict | None = None,
 ) -> Image.Image:
     """Decode one frame at `moment` as raw RGB, retrying the seek when needed.
 
@@ -704,6 +705,8 @@ def grab_frame_ffmpeg(
             except OSError as exc:
                 raise FrameError(f"cannot run ffmpeg ({exc})") from exc
             if code == 0 and len(out) == expected:
+                if normalize and hint is not None:
+                    hint["normalize"] = True  # this file hands out mixed sizes
                 if on_gpu:
                     return Image.frombytes("RGB", (probe.width, probe.height), out, "raw", "BGR", 0, 1)
                 return Image.frombytes("RGB", (probe.width, probe.height), out)
@@ -864,7 +867,7 @@ def frame_source(
         active = state["mode"]
         try:
             return grab_frame_ffmpeg(
-                job.video, moment, job.probe, state["binary"], cap, active, state["normalize"]
+                job.video, moment, job.probe, state["binary"], cap, active, state["normalize"], state
             )
         except FrameError:
             if active == "cuda":

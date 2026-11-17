@@ -455,7 +455,9 @@ class EndToEndTests(unittest.TestCase):
 
     def test_same_folder_spelled_twice_is_processed_once(self):
         folder = self.workdir("twice")
-        code, output = run_main([str(folder), str(folder) + os.sep, ".", "--frames", "4"])
+        empty = self.base / "empty-twice"
+        empty.mkdir(exist_ok=True)
+        code, output = run_main([str(folder), str(folder) + os.sep, str(empty), "--frames", "4"])
         self.assertEqual(code, 0, output)
         self.assertIn("1 done", output)
 
@@ -605,10 +607,10 @@ class EndToEndTests(unittest.TestCase):
 
         original = qvp.grab_frame_ffmpeg
 
-        def fake(video, moment, probe, binary, threads=0, hwaccel="none", prefer_normalize=False):
+        def fake(video, moment, probe, binary, threads=0, hwaccel="none", prefer_normalize=False, hint=None):
             if hwaccel == "cuda":
                 raise qvp.FrameError("no GPU here")
-            return original(video, moment, probe, binary, threads, "none", prefer_normalize)
+            return original(video, moment, probe, binary, threads, "none", prefer_normalize, hint)
 
         folder = self.workdir("fallback")
         with mock.patch.object(qvp, "grab_frame_ffmpeg", side_effect=fake):
