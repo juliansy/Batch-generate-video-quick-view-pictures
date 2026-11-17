@@ -62,9 +62,12 @@ PRIVATE = [
 
 REQUIRED = [
     "qvp.py", "qvp.bat", "README.md", "README.zh-CN.md", "CHANGELOG.md",
-    "LICENSE", "requirements.txt", ".gitignore", ".gitattributes",
+    "LICENSE", "requirements.txt",
     "docs/06-auto-grid.md", "docs/07-performance.md", "docs/08-release.md",
 ]
+
+# Only a checkout has these; the release archive deliberately does not.
+REPO_ONLY = [".gitignore", ".gitattributes"]
 
 @dataclass
 class Finding:
@@ -76,6 +79,7 @@ class Finding:
 class Gate:
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.is_repo = (root / ".git").exists()
         self.findings: list[Finding] = []
         self.tests_ran: int | None = None
         self.version = ""
@@ -265,11 +269,12 @@ class Gate:
 
     # -- N: files and line endings ---------------------------------------
     def check_files(self) -> None:
-        missing = [name for name in REQUIRED if not (self.root / name).exists()]
+        required = REQUIRED + (REPO_ONLY if self.is_repo else [])
+        missing = [name for name in required if not (self.root / name).exists()]
         if missing:
             self.add("FAIL", "N3", f"missing files: {missing}")
         else:
-            self.add("PASS", "N3", f"{len(REQUIRED)} required files present")
+            self.add("PASS", "N3", f"{len(required)} required files present")
 
         problems: list[str] = []
         for pattern, want_crlf in (("*.py", False), ("*.bat", True), ("*.md", False)):
@@ -291,6 +296,9 @@ class Gate:
     # -- K: changelog and tags -------------------------------------------
     def check_changelog(self) -> None:
         entries = [match.group(1) for match in re.finditer(r"(?m)^## v([0-9][0-9.]*)", self.read("CHANGELOG.md"))]
+        if not self.is_repo:
+            self.add("WARN", "K1", "no .git here (running from an archive) - tag checks skipped")
+            return
         tags = [tag.lstrip("v") for tag in self.run("git", "tag", "--list", "v*").stdout.split()]
         if self.version and self.version not in tags:
             self.add("WARN", "K1", f"v{self.version} has no tag yet (create it with the release, before announcing)")

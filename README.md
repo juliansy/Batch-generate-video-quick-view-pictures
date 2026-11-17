@@ -108,16 +108,16 @@ Exit codes: `0` everything ok or skipped (an existing folder with no videos also
 ## Output
 
 ```text
-qvp 2.9.8
+qvp 2.9.9
 2 video(s) | grid auto | sheets/ next to each video
 [1/2] lecture-01.mp4 … ok
 [2/2] talk-02.mp4 … ok
 #  file            grid  frames  canvas     time   result
 -  --------------  ----  ------  ---------  -----  ------
-1  lecture-01.mp4  4x3   12      5136x2172  1.18s  ok
+1  lecture-01.mp4  4x3   12      5136x2172  1.07s  ok
 2  talk-02.mp4     2x2   4       2568x1448  0.40s  ok
 
-2 done, 0 skipped, 0 failed | 1.85s
+2 done, 0 skipped, 0 failed | 1.65s
 ```
 
 `canvas` is the sheet size in pixels, `time` is how long that file took. Labels and error text are English; a message coming from the video itself is passed through as ffmpeg phrased it.

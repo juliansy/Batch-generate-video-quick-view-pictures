@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.9.9
+
+- The gate passes on its own release archive. v2.9.8 shipped a `release_check.py` that failed `N3` inside the unzipped package, because it demanded `.gitignore` and `.gitattributes` from a tree that is deliberately not a checkout, and `K1` ran `git tag` in a folder with no repository. Required files are now split into checkout-only and always-required, and tag checks report "running from an archive" instead of nothing.
+- Found by following the checklist on the published archive rather than the working tree - step 4 of `docs/08-release.md`, which exists for exactly this.
+
 ## v2.9.8
 
 - `tools/release_check.py` is the gate this project should have had from the start. It checks version strings against the binary, README samples and CHANGELOG (V1-V5), documented test counts against the suite (T1-T2), the README option table against the parser (F1), English/Chinese section parity including the first flag or file name of each section (H1-H2), author-voice wording (I1), personal paths and real clip titles (P1), line endings (N1), required files (N3), CHANGELOG/tag consistency (K1-K2), and with `--package` the archive itself: one top folder, CRLF launcher, packaged README sample, `-V` output (N2, V5).

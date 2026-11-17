@@ -53,6 +53,7 @@ python tools\release_check.py --package video-quick-view-2.9.8.zip
 | `N2` | 发布包里只有一个顶层目录、`qvp.bat` 是 CRLF、能跑 `-V` |
 | `N3` | 必需文件齐全 |
 | `K2` | 每个 tag 都有对应的 CHANGELOG 条目 |
+| `K3` | 在解压出来的发布包里也能跑通（`N3` 只要求 checkout 里的 `.gitignore`/`.gitattributes`，`K1` 在无 `.git` 时降级为提示） |
 
 ## 它检查不了什么
 

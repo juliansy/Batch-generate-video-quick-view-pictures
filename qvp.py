@@ -93,7 +93,7 @@ GPU_CHUNK_WORKERS = 2  # concurrent GPU processes: more than this starts swappin
 BORDER_SIZE = 2  # white border around every frame, in pixels
 TEXT_COLOR = "red"  # timecode colour
 
-VERSION = "2.9.8"
+VERSION = "2.9.9"
 JPEG_QUALITY = 82  # 4:4:4 at 82 matches q85 4:2:0 in bytes, sharper on text
 JPEG_SUBSAMPLING = "4:4:4"  # chroma at full resolution: text survives compression
 AVIF_QUALITY = 60  # AVIF at 60 looks like JPEG at 84 and is ~3x smaller
