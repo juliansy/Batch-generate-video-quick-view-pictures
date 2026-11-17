@@ -108,16 +108,16 @@ python qvp.py -g 4x4 "D:\Videos"          # 固定网格，不用自动
 ## 输出
 
 ```text
-qvp 2.9.7
+qvp 2.9.8
 2 video(s) | grid auto | sheets/ next to each video
 [1/2] lecture-01.mp4 … ok
 [2/2] talk-02.mp4 … ok
 #  file            grid  frames  canvas     time   result
 -  --------------  ----  ------  ---------  -----  ------
-1  lecture-01.mp4  4x3   12      5136x2172  1.09s  ok
-2  talk-02.mp4     2x2   4       2568x1448  0.39s  ok
+1  lecture-01.mp4  4x3   12      5136x2172  1.18s  ok
+2  talk-02.mp4     2x2   4       2568x1448  0.40s  ok
 
-2 done, 0 skipped, 0 failed | 1.67s
+2 done, 0 skipped, 0 failed | 1.85s
 ```
 
 `canvas` 是速览图的像素尺寸，`time` 是这个文件花的时间。标签和错误提示是英文；来自视频本身的报错沿用 ffmpeg 的原文。
@@ -175,6 +175,8 @@ qvp 2.9.7
 - 同名不同扩展名（`talk.mp4`、`talk.mkv`）共用一个输出名：排序在前的（`talk.mkv`）出图，另一个跳过；两个都要就改个名。
 
 ## 项目文档
+
+发布前先跑 `python tools\release_check.py`（打包用 `tools\make_package.py`），检查项与人工清单见 [`docs/08`](docs/08-release.md)。
 
 设计、评审与测量笔记（中文）：[`docs/06`](docs/06-auto-grid.md) 与 [`docs/07`](docs/07-performance.md) 描述当前默认值；`docs/01`–`docs/05` 是 v1 到 v2 重写期间的记录，保留的是当时的推理，不代表今天的代码。
 

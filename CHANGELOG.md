@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.9.8
+
+- `tools/release_check.py` is the gate this project should have had from the start. It checks version strings against the binary, README samples and CHANGELOG (V1-V5), documented test counts against the suite (T1-T2), the README option table against the parser (F1), English/Chinese section parity including the first flag or file name of each section (H1-H2), author-voice wording (I1), personal paths and real clip titles (P1), line endings (N1), required files (N3), CHANGELOG/tag consistency (K1-K2), and with `--package` the archive itself: one top folder, CRLF launcher, packaged README sample, `-V` output (N2, V5).
+- `tools/make_package.py` builds the archive from an explicit file list and refuses to pack a `qvp.bat` that is not pure CRLF instead of silently rewriting it - the LF launcher of v2.9.6 came from a script that "fixed" text without looking.
+- `tools/gate_selftest.py` breaks a copy of the repo seven ways (version drift, stale sample, LF launcher, undocumented flag, author voice, private path, swapped sections) and asserts the gate fails on each. A green gate you never saw fail is not evidence.
+- `docs/08-release.md` is the human checklist: what the gate cannot judge (whether a number is true, whether both languages are equally honest) and how to justify an exception.
+
 ## v2.9.7
 
 - Rotation is read from the container display matrix only. The tag fallback added in v2.9.6 never ran - ffprobe was never asked for `stream_tags` - so it was dead code guarded by a test that re-implemented it. Both are gone, and a bare `rotate` tag that ffmpeg ignores is now a documented limitation instead of a claim.

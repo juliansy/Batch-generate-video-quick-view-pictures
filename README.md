@@ -108,16 +108,16 @@ Exit codes: `0` everything ok or skipped (an existing folder with no videos also
 ## Output
 
 ```text
-qvp 2.9.7
+qvp 2.9.8
 2 video(s) | grid auto | sheets/ next to each video
 [1/2] lecture-01.mp4 … ok
 [2/2] talk-02.mp4 … ok
 #  file            grid  frames  canvas     time   result
 -  --------------  ----  ------  ---------  -----  ------
-1  lecture-01.mp4  4x3   12      5136x2172  1.09s  ok
-2  talk-02.mp4     2x2   4       2568x1448  0.39s  ok
+1  lecture-01.mp4  4x3   12      5136x2172  1.18s  ok
+2  talk-02.mp4     2x2   4       2568x1448  0.40s  ok
 
-2 done, 0 skipped, 0 failed | 1.67s
+2 done, 0 skipped, 0 failed | 1.85s
 ```
 
 `canvas` is the sheet size in pixels, `time` is how long that file took. Labels and error text are English; a message coming from the video itself is passed through as ffmpeg phrased it.
@@ -175,6 +175,8 @@ Dense early, flatter later; a portrait sheet is chosen with one size comparison,
 - Two files with the same stem (`talk.mp4`, `talk.mkv`) share one sheet name: the one that sorts first (`talk.mkv`) is rendered and the other is skipped, so rename one if you need both.
 
 ## Notes
+
+Before publishing, run `python tools\release_check.py` (and `tools\make_package.py` for the archive); the gate and the human checklist are described in [`docs/08`](docs/08-release.md).
 
 Design, review and measurement notes, in Chinese: [`docs/06`](docs/06-auto-grid.md) and [`docs/07`](docs/07-performance.md) describe the current defaults; `docs/01`-`docs/05` are records from the v1 to v2 rewrite and are kept for the reasoning, not as a description of today's code.
 
