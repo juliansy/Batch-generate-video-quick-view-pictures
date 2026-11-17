@@ -35,7 +35,7 @@ One contact sheet per video: evenly spaced frames stamped with their timecode. E
 
 ### Format and size
 
-JPEG is the default: every viewer, browser and chat window opens it. It is written at quality 82 with 4:4:4 chroma, which keeps the thin red timecode crisp — the usual 4:2:0 subsampling smears it, and the file is no bigger this way.
+JPEG is the default: every viewer, browser and chat window opens it. Sheets are written at quality 82 with full-resolution chroma, which keeps the thin red timecode crisp instead of smearing it into the background.
 
 `--format avif` writes the same sheet in about a third of the bytes (166 MP: 12 MB JPEG vs 4 MB AVIF) for a slower encode. AVIF needs a recent viewer: Windows 11 Photos, Chrome, Edge, Firefox and macOS Preview open it; Windows 10 needs the free AVIF extension from the Store.
 
@@ -45,12 +45,12 @@ A sheet is a bitmap in memory before it is compressed, at roughly 3 bytes per pi
 
 ```text
 D:\Videos\
-├── qvp.py              the script
-├── lecture-01.mp4      a video it will read
-├── talk-02.mp4         another one
-└── sheets\             created on the first run
-    ├── lecture-01_collage.jpg
-    └── talk-02_collage.jpg
+├── qvp.py                      the script
+├── lecture-01.mp4              a video it will read
+├── talk-02.mp4                 another one
+└── sheets\                     created on the first run
+    ├── lecture-01_collage.jpg  the sheet made from lecture-01.mp4
+    └── talk-02_collage.jpg     the sheet made from talk-02.mp4
 ```
 
 With no arguments it reads its own folder; pass a folder or files to work elsewhere.
@@ -67,11 +67,11 @@ ffmpeg is optional: a system copy is used when present (about 2× faster), other
 Double-click **`qvp.bat`**, or drop a folder on it. From a terminal:
 
 ```text
-python qvp.py                        # videos next to the script
-python qvp.py D:\Videos              # one folder
-python qvp.py D:\Videos -R -j 4      # subfolders too, four at a time
-python qvp.py -n D:\Videos           # plan only, write nothing
-python qvp.py -g 4x4 D:\Videos       # fixed grid instead of auto
+python qvp.py                              # videos next to the script
+python qvp.py "D:\Videos"                 # one folder
+python qvp.py "D:\Videos" -R -j 4         # subfolders too, four at a time
+python qvp.py -n "D:\Videos"              # plan only, write nothing
+python qvp.py -g 4x4 "D:\Videos"          # fixed grid instead of auto
 ```
 
 ### Options
@@ -144,7 +144,7 @@ cells stay tall and the rows come slowly):
 | up to 3 min | 8x2 | 16 |
 | over 3 min | 8x3 | 24 |
 
-Dense early, flatter later; a portrait sheet is chosen with one size comparison, no extra probe. A 4K 5x5 is 208 MP, over the default budget, so it steps down to 5x4. Details in [`docs/06-auto-grid.md`](docs/06-auto-grid.md).
+Dense early, flatter later; a portrait sheet is chosen with one size comparison, no extra probe. A 4K 5x5 is 208 MP and fits the default 320 MP budget; anything larger steps down one rung. Details in [`docs/06-auto-grid.md`](docs/06-auto-grid.md).
 
 ## GPU decoding
 

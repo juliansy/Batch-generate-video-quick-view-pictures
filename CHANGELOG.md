@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.9.1
+
+- Documentation only: the READMEs describe the current encoder settings instead of comparing them with older ones, the pixel budget in the docs matches the 320 MP default, example commands quote their paths, and the folder tree explains every file.
+
 ## v2.9.0
 
 - JPEG sheets are written at quality 82 with 4:4:4 chroma and progressive coding: the red timecode stays crisp (average red error 7 instead of 34) and the file is about the same size as before.

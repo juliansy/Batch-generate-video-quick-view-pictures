@@ -37,12 +37,12 @@
 
 ```text
 D:\Videos\
-├── qvp.py              脚本
-├── lecture-01.mp4      会被读取的视频
-├── talk-02.mp4         另一个
-└── sheets\             第一次运行时创建
-    ├── lecture-01_collage.jpg
-    └── talk-02_collage.jpg
+├── qvp.py                      脚本
+├── lecture-01.mp4              会被读取的视频
+├── talk-02.mp4                 另一个
+└── sheets\                     第一次运行时创建
+    ├── lecture-01_collage.jpg  lecture-01.mp4 生成的速览图
+    └── talk-02_collage.jpg     talk-02.mp4 生成的速览图
 ```
 
 不带参数时处理脚本自己所在的目录；给路径就处理别处。
@@ -59,11 +59,11 @@ ffmpeg 可选：系统里有就用（快约 2 倍），没有就用 moviepy 自�
 双击 **`qvp.bat`**，或把文件夹拖到它上面。命令行：
 
 ```text
-python qvp.py                        # 脚本旁边的视频
-python qvp.py D:\Videos              # 一个文件夹
-python qvp.py D:\Videos -R -j 4      # 连子目录，同时处理 4 个
-python qvp.py -n D:\Videos           # 只看计划，不写文件
-python qvp.py -g 4x4 D:\Videos       # 固定网格，不用自动
+python qvp.py                              # 脚本旁边的视频
+python qvp.py "D:\Videos"                 # 一个文件夹
+python qvp.py "D:\Videos" -R -j 4         # 连子目录，同时处理 4 个
+python qvp.py -n "D:\Videos"              # 只看计划，不写文件
+python qvp.py -g 4x4 "D:\Videos"          # 固定网格，不用自动
 ```
 
 ### 参数
@@ -97,7 +97,7 @@ python qvp.py -g 4x4 D:\Videos       # 固定网格，不用自动
 
 ### 格式与体积
 
-默认 JPEG：任何看图软件、浏览器、聊天窗口都能打开。质量 82、色度 4:4:4——红色时间码不会糊，文件也不比旧的 4:2:0 + 85 更大。
+默认 JPEG：任何看图软件、浏览器、聊天窗口都能打开。质量 82、色度不降采样——红色时间码保持锐利，不会糊进背景。
 
 `--format avif` 写出同样画面的 AVIF，体积约为三分之一（166 MP：JPEG 12 MB，AVIF 4 MB），代价是编码更慢。AVIF 需要较新的查看器：Windows 11 照片、Chrome、Edge、Firefox、macOS 预览都能开；Windows 10 需要装商店里的免费 AVIF 扩展。
 
@@ -144,11 +144,11 @@ python qvp.py -g 4x4 D:\Videos       # 固定网格，不用自动
 | 3 分钟内 | 8x2 | 16 |
 | 超过 3 分钟 | 8x3 | 24 |
 
-短片密、长片疏；竖屏只多一次尺寸比较，不额外探测。4K 的 5x5 是 208 MP，超过默认预算，会降一档到 5x4。详见 [`docs/06-auto-grid.md`](docs/06-auto-grid.md)。
+短片密、长片疏；竖屏只多一次尺寸比较，不额外探测。4K 的 5x5 是 208 MP，在默认 320 MP 预算内；更大的画布才会降一档。详见 [`docs/06-auto-grid.md`](docs/06-auto-grid.md)。
 
 ## GPU 解码
 
-`--cuda` 走 ffmpeg 的 CUDA hwaccel，失败自动退回软件；报表里标 `ok (GPU)` 或 `ok (software fallback)`。默认关闭，收益取决于显卡、驱动、ffmpeg 构建和编码格式——依赖它之前先用 `tools/bench_hw.py` 在自己的文件上量。`--batch-seek` 保持默认（`--cuda` 时是 4）；小显存卡上八个 4K 输入一批可能到约 3.5 GB 显存。
+`--cuda` 走 ffmpeg 的 CUDA hwaccel，失败自动退回软件；报表里标 `ok (GPU)` 或 `ok (software fallback)`。默认关闭，收益取决于显卡、驱动、ffmpeg 构建和编码格式——依赖它之前先用 `tools/bench_hw.py` 测一下。`--batch-seek` 保持默认（`--cuda` 时是 4）；小显存卡上八个 4K 输入一批可能到约 3.5 GB 显存。
 
 ## 安全
 
