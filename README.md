@@ -28,7 +28,7 @@ One contact sheet per video: evenly spaced frames stamped with their timecode. E
 ## What it does
 
 - Reads every video it finds: `.mp4` `.m4v` `.mov` `.avi` `.mkv` `.webm` `.flv` `.wmv` `.mpg` `.mpeg` `.ts` `.m2ts`.
-- Picks the grid from the length: **2×2 → 3×2 → 3×3 → 4×3 → 4×4 → 5×4 → 5×5**.
+- Picks the grid from the length and shape: a landscape ladder **2x2 → 3x2 → 3x3 → 4x3 → 4x4 → 5x4 → 5x5**, a portrait one **4x1 → 8x3**.
 - Stamps each frame with its timecode (`00:26`, or `1:01:05` past an hour).
 - Saves `sheets/<name>_collage.jpg`.
 - Skips sheets that already exist, and says why a file was skipped or failed.
@@ -72,7 +72,7 @@ python qvp.py -g 4x4 D:\Videos       # fixed grid instead of auto
 | --- | --- | --- |
 | `-o, --out DIR` | `<video folder>/sheets` | where sheets go |
 | `--frames N` | one per cell | frames per video; picks the smallest grid that holds them |
-| `-g, --grid CxR` | `auto` | columns × rows, or `auto` from the length |
+| `-g, --grid CxR` | `auto` | columns x rows (`4x4`, `4*4`, `4×4`, `4,4` all work), or `auto` |
 | `-b, --border PX` | 2 | white border around each frame |
 | `-c, --color C` | `red` | timecode colour |
 | `--font PATH` | auto | font file for the timecode |
@@ -111,15 +111,30 @@ Exit codes: `0` ok, `1` some file failed, `2` bad arguments, `130` interrupted.
 
 | Length | Grid | Cells | Seconds per cell |
 | --- | --- | --- | --- |
-| up to 20 s | 2 × 2 | 4 | 5 |
-| up to 40 s | 3 × 2 | 6 | 7 |
-| up to 1 min | 3 × 3 | 9 | 7 |
-| up to 3 min | 4 × 3 | 12 | 15 |
-| up to 5 min | 4 × 4 | 16 | 19 |
-| up to 12 min | 5 × 4 | 20 | 36 |
-| over 12 min | 5 × 5 | 25 | 72+ |
+| up to 20 s | 2x2 | 4 | 5 |
+| up to 40 s | 3x2 | 6 | 7 |
+| up to 1 min | 3x3 | 9 | 7 |
+| up to 3 min | 4x3 | 12 | 15 |
+| up to 5 min | 4x4 | 16 | 19 |
+| up to 12 min | 5x4 | 20 | 36 |
+| over 12 min | 5x5 | 25 | 72+ |
 
-Dense early, flatter later. A 4K 5×5 is 208 MP, over the default budget, so it steps down to 5×4. Details in [`docs/06-auto-grid.md`](docs/06-auto-grid.md).
+Portrait (taller than wide — short vertical video packs more per second, so the
+cells stay tall and the rows come slowly):
+
+| Length | Grid | Cells |
+| --- | --- | --- |
+| up to 6 s | 4x1 | 4 |
+| up to 10 s | 5x1 | 5 |
+| up to 15 s | 6x1 | 6 |
+| up to 20 s | 4x2 | 8 |
+| up to 28 s | 5x2 | 10 |
+| up to 38 s | 6x2 | 12 |
+| up to 1 min | 7x2 | 14 |
+| up to 3 min | 8x2 | 16 |
+| over 3 min | 8x3 | 24 |
+
+Dense early, flatter later; a portrait sheet is chosen with one size comparison, no extra probe. A 4K 5x5 is 208 MP, over the default budget, so it steps down to 5x4. Details in [`docs/06-auto-grid.md`](docs/06-auto-grid.md).
 
 ## GPU decoding
 
@@ -135,10 +150,12 @@ Dense early, flatter later. A 4K 5×5 is 208 MP, over the default budget, so it 
 ## Limitations
 
 - Frames are taken at fixed intervals, not on scene changes.
-- One image per video at source resolution: 4×4 of 4K is ~133 MP and needs ~0.7 GB RAM.
+- One image per video at source resolution: 4x4 of 4K is ~133 MP and needs ~0.7 GB RAM.
 - The first and last second are skipped.
 - Seeking costs time: each frame decodes from the previous keyframe, so 4K sheets take seconds even in parallel.
 - Only the picture is used; audio, subtitles and cover art are ignored.
+- A file spliced out of parts with different sizes (720p then 1080p) is fitted into the cell the probe reported, scaled and padded, never stretched.
+- Some MPEG-TS captures return nothing for a fast seek near the tail; the frame is retried with a slower accurate seek, so the file works but takes a little longer.
 - Two files with the same stem (`talk.mp4`, `talk.mkv`) share one sheet name: the first is rendered and the second is skipped, so rename one if you need both.
 
 ## Notes

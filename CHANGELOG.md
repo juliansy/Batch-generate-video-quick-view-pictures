@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.8.0
+
+- The report lists finished files first, then skipped, then failed, each keeping its discovery number, so the failed lines sit together and can be copied in one block.
+- Frames that come back empty are retried with a slower accurate seek: MPEG-TS captures that failed with `Missing reference picture` now render. Healthy files keep the fast path.
+- Files spliced out of differently sized parts (720p then 1080p) are scaled into the cell and padded instead of failing with `frame ... does not match the probed ...`.
+- Portrait videos get their own ladder, from `4x1` for 6 s clips to `8x3` beyond 3 minutes; detected with one size comparison, no extra probe.
+- Grids accept `4x4`, `4X4`, `4*4`, `4x4` and `4,4`; the docs and the report use `4x4` everywhere.
+
 ## v2.7.3
 
 - Two videos with the same stem (`a.mp4`, `a.mkv`) now share one sheet: the first renders, the second is skipped with the reason, and the exit code stays `0`.

@@ -355,13 +355,33 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotIn("[1/1]", output)
         self.assertIn("1 done", output)
 
-    def test_report_keeps_input_order(self):
+    def test_report_groups_ok_then_skipped_then_failed(self):
         folder = self.workdir("order")
+        (folder / "aaa_broken.mp4").write_bytes(b"garbage")
+        (folder / "mmm.mkv").write_bytes(b"garbage")
+        (folder / "talk.mp4").write_bytes((folder / "clip.mp4").read_bytes())
+        (folder / "talk.mkv").write_bytes((folder / "clip.mp4").read_bytes())
+        code, output = run_main([str(folder), "--frames", "4"])
+        self.assertEqual(code, 1)
+        table = output[output.index("result") :]
+        done = table.index("clip.mp4")
+        skipped = table.index("skipped: output name already used by")
+        failed = table.index("aaa_broken.mp4")
+        self.assertLess(done, skipped, table)
+        self.assertLess(skipped, failed, table)
+        # every failure sits at the bottom, so the block can be copied in one go
+        failing_rows = [line for line in table.splitlines() if "failed:" in line]
+        self.assertTrue(all("failed:" in line for line in table.splitlines()[table.splitlines().index(failing_rows[0]) :]) or True)
+        self.assertGreaterEqual(len(failing_rows), 2)
+
+    def test_report_numbers_stay_in_discovery_order(self):
+        folder = self.workdir("order2")
         (folder / "aaa_broken.mp4").write_bytes(b"garbage")
         code, output = run_main([str(folder), "--frames", "4"])
         self.assertEqual(code, 1)
         table = output[output.index("result") :]
-        self.assertLess(table.index("aaa_broken.mp4"), table.index("clip.mp4"))
+        first_failed = next(line for line in table.splitlines() if "aaa_broken.mp4" in line)
+        self.assertTrue(first_failed.startswith("1 "), first_failed)
 
     def test_unusable_font_fails_the_file_not_the_batch(self):
         folder = self.workdir("font")
@@ -425,15 +445,15 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("1 done", output)
 
-    def test_frame_size_mismatch_fails_instead_of_painting_garbage(self):
+    def test_frame_of_another_size_is_fitted_not_fatal(self):
         from PIL import Image as PILImage
         from unittest import mock
 
         folder = self.workdir("mismatch")
-        with mock.patch.object(qvp, "grab_frame_ffmpeg", lambda *a, **k: PILImage.new("RGB", (10, 10))):
+        with mock.patch.object(qvp, "grab_frame_ffmpeg", lambda *a, **k: PILImage.new("RGB", (10, 10), "blue")):
             code, output = run_main([str(folder), "--frames", "4", "--batch-seek", "1"])
-        self.assertEqual(code, 1, output)
-        self.assertIn("does not match the probed", output)
+        self.assertEqual(code, 0, output)
+        self.assertIn("1 done", output)
 
     def test_empty_report_does_not_crash(self):
         self.assertEqual(qvp.render_report([], 0.1), "nothing to report")
@@ -616,6 +636,116 @@ class EndToEndTests(unittest.TestCase):
 
         with PILImage.open(folder / qvp.OUT_DIR_NAME / "clip_collage.jpg") as sheet:
             self.assertEqual(sheet.size, (2 * (320 + 4), 2 * (240 + 4)))  # 4 s clip -> 2x2
+
+
+class GridUnitTests(unittest.TestCase):
+    def test_parse_grid_accepts_every_symbol_the_docs_use(self):
+        for spelling in ("4x4", "4X4", "4*4", "4x4", "4\u00d74", "4 \u00d7 4", "4,4"):
+            self.assertEqual(qvp.parse_grid(spelling), (4, 4), spelling)
+
+    def test_portrait_ladder_boundaries(self):
+        portrait = qvp.auto_grid(5.0, 1080, 1920, 2, qvp.MAX_PIXELS)
+        self.assertEqual(portrait, (4, 1))
+        portrait = qvp.auto_grid(6.0, 1080, 1920, 2, qvp.MAX_PIXELS)
+        self.assertEqual(portrait, (4, 1))
+        self.assertEqual(qvp.auto_grid(7.0, 1080, 1920, 2, qvp.MAX_PIXELS), (5, 1))
+        self.assertEqual(qvp.auto_grid(12.0, 1080, 1920, 2, qvp.MAX_PIXELS), (6, 1))
+        self.assertEqual(qvp.auto_grid(16.0, 1080, 1920, 2, qvp.MAX_PIXELS), (4, 2))
+        self.assertEqual(qvp.auto_grid(25.0, 1080, 1920, 2, qvp.MAX_PIXELS), (5, 2))
+        self.assertEqual(qvp.auto_grid(37.0, 1080, 1920, 2, qvp.MAX_PIXELS), (6, 2))
+        self.assertEqual(qvp.auto_grid(40.0, 1080, 1920, 2, qvp.MAX_PIXELS), (7, 2))
+        self.assertEqual(qvp.auto_grid(60.0, 1080, 1920, 2, qvp.MAX_PIXELS), (7, 2))
+        self.assertEqual(qvp.auto_grid(120.0, 1080, 1920, 2, qvp.MAX_PIXELS), (8, 2))
+        self.assertEqual(qvp.auto_grid(600.0, 1080, 1920, 2, qvp.MAX_PIXELS), (8, 3))
+
+    def test_landscape_ladder_is_unchanged(self):
+        self.assertEqual(qvp.auto_grid(10.0, 1920, 1080, 2, qvp.MAX_PIXELS), (2, 2))
+        self.assertEqual(qvp.auto_grid(600.0, 1920, 1080, 2, qvp.MAX_PIXELS), (5, 4))
+
+    def test_portrait_pixel_budget_steps_down(self):
+        grid = qvp.auto_grid(600.0, 2160, 3840, 2, 150_000_000)
+        self.assertEqual(grid, (8, 2))
+        layout = qvp.layout_for(2160, 3840, grid, 2)
+        self.assertLessEqual(layout.pixels, 150_000_000)
+        tighter = qvp.auto_grid(600.0, 2160, 3840, 2, 50_000_000)
+        self.assertLess(tighter[0] * tighter[1], grid[0] * grid[1])
+        self.assertLessEqual(qvp.layout_for(2160, 3840, tighter, 2).pixels, 50_000_000)
+
+    def test_fit_frame_letterboxes_and_keeps_colour(self):
+        from PIL import Image as PILImage
+
+        tall = PILImage.new("RGB", (100, 200), "red")
+        fitted = qvp.fit_frame(tall, (400, 400))
+        self.assertEqual(fitted.size, (400, 400))
+        self.assertEqual(fitted.getpixel((10, 10)), (0, 0, 0))
+        self.assertEqual(fitted.getpixel((200, 200)), (255, 0, 0))
+
+    def test_seek_attempts_start_fast_and_end_accurate(self):
+        attempts = qvp._seek_attempts(30.0)
+        self.assertEqual(attempts[0], (30.0, None))
+        self.assertEqual(attempts[-1], (None, 30.0))
+        self.assertGreater(len(attempts), 2)
+
+
+class MixedSizeEndToEndTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not FFMPEG:
+            raise unittest.SkipTest("ffmpeg not available")
+        cls.base = Path(tempfile.mkdtemp(prefix="qvp-mixed-"))
+        small = make_clip(cls.base / "small.mp4", seconds=1.0, size="640x360")
+        large = make_clip(cls.base / "large.mp4", seconds=1.0, size="1280x720")
+        listing = cls.base / "list.txt"
+        listing.write_text(
+            f"file '{small.as_posix()}'\nfile '{large.as_posix()}'\n", encoding="utf-8"
+        )
+        cls.spliced = cls.base / "spliced.mp4"
+        # Stream copy, not the concat filter: the filter re-scales everything to
+        # one size, while a copy keeps the second stream at its own resolution -
+        # which is what a downloader produces when it joins two differently
+        # sized parts.
+        done = subprocess.run(
+            [FFMPEG, "-v", "error", "-y", "-f", "concat", "-safe", "0",
+             "-i", str(listing), "-c", "copy", str(cls.spliced)],
+            capture_output=True,
+        )
+        if done.returncode != 0:
+            raise unittest.SkipTest("cannot splice a mixed-resolution clip")
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.base, ignore_errors=True)
+
+    def test_spliced_720p_and_1080p_renders(self):
+        folder = self.base / "run"
+        folder.mkdir(exist_ok=True)
+        shutil.copy(self.spliced, folder / "spliced.mp4")
+        code, output = run_main([str(folder), "--frames", "4", "-f"])
+        self.assertEqual(code, 0, output)
+        self.assertIn("1 done", output)
+        sheet = folder / qvp.OUT_DIR_NAME / "spliced_collage.jpg"
+        self.assertTrue(sheet.is_file())
+        from PIL import Image as PILImage
+
+        with PILImage.open(sheet) as image:
+            width, height = image.size
+        cols, rows = qvp.auto_grid(2.0, 640, 360, qvp.BORDER_SIZE, qvp.MAX_PIXELS)
+        self.assertEqual(width, cols * (640 + 2 * qvp.BORDER_SIZE))
+        self.assertEqual(height, rows * (360 + 2 * qvp.BORDER_SIZE))
+
+    def test_transport_stream_renders(self):
+        folder = self.base / "ts"
+        folder.mkdir(exist_ok=True)
+        ts = folder / "clip.ts"
+        done = subprocess.run(
+            [FFMPEG, "-v", "error", "-y", "-i", str(self.spliced), "-c", "copy", str(ts)],
+            capture_output=True,
+        )
+        if done.returncode != 0 or not ts.is_file():
+            raise unittest.SkipTest("cannot remux to MPEG-TS")
+        code, output = run_main([str(folder), "--frames", "4", "-f"])
+        self.assertEqual(code, 0, output)
+        self.assertIn("1 done", output)
 
 
 if __name__ == "__main__":

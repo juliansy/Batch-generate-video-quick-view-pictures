@@ -66,6 +66,21 @@ GRID_PRESETS = (
     (720, (5, 4)),
     (None, (5, 5)),
 )
+
+# Portrait clips are tall, not wide: a square cell wastes the height and the
+# sheet ends up too narrow to read. This ladder keeps cells tall and adds rows
+# slowly, which matches short vertical video (fast cutting, little to see).
+PORTRAIT_GRID_PRESETS = (
+    (6, (4, 1)),
+    (10, (5, 1)),
+    (15, (6, 1)),
+    (20, (4, 2)),
+    (28, (5, 2)),
+    (38, (6, 2)),
+    (60, (7, 2)),
+    (180, (8, 2)),
+    (None, (8, 3)),
+)
 OUT_DIR_NAME = "sheets"   # where sheets go, next to each video
 EDGE_INSET = 1.0          # seconds skipped at both ends (fades, slates, end cards)
 MAX_DECODE_WORKERS = 4    # ffmpeg processes pulling frames in parallel
@@ -75,7 +90,7 @@ GPU_CHUNK_WORKERS = 2     # concurrent GPU processes: more than this starts swap
 BORDER_SIZE = 2          # white border around every frame, in pixels
 TEXT_COLOR = "red"       # timecode colour
 
-VERSION = "2.7.3"
+VERSION = "2.8.0"
 JPEG_QUALITY = 85
 MAX_PIXELS = 200_000_000  # refuse to build a canvas bigger than this
 
@@ -212,8 +227,18 @@ def grid_arg(text: str) -> tuple[int, int] | None:
 
 
 def parse_grid(text: str) -> tuple[int, int]:
-    """Parse `4x4`, `4X4`, `4*4` or `4,4` into (cols, rows)."""
-    cleaned = text.strip().lower().replace("*", "x").replace(",", "x")
+    """Parse `4x4`, `4X4`, `4*4`, `4x4` or `4,4` into (cols, rows).
+
+    The multiplication sign is accepted too, so a grid copied out of the README
+    or out of the report works without editing.
+    """
+    cleaned = (
+        text.strip().lower()
+        .replace("\u00d7", "x")
+        .replace("*", "x")
+        .replace(",", "x")
+        .replace(" ", "")
+    )
     parts = cleaned.split("x")
     if len(parts) != 2 or not all(p.strip().isdigit() for p in parts):
         raise UsageError(f"invalid grid {text!r}: expected COLUMNSxROWS, e.g. 4x4")
@@ -271,11 +296,14 @@ def auto_grid(duration: float, width: int, height: int, border: int, max_pixels:
 
     The ladder keeps the sheet dense early (a 40 s clip already gets 6 cells)
     because a short video changes what it shows more often; long films add cells
-    slowly. The pixel budget wins over the table when a 4K 5x5 would not fit.
+    slowly. Portrait clips use their own ladder: one integer comparison against
+    the probed size, no division, no extra probe. The pixel budget wins over the
+    table when a 4K 5x5 would not fit.
     """
-    shapes = [shape for _, shape in GRID_PRESETS]
+    presets = PORTRAIT_GRID_PRESETS if height > width else GRID_PRESETS
+    shapes = [shape for _, shape in presets]
     index = next(
-        (i for i, (limit, _) in enumerate(GRID_PRESETS) if limit is None or duration <= limit),
+        (i for i, (limit, _) in enumerate(presets) if limit is None or duration <= limit),
         len(shapes) - 1,
     )
     while index > 0:
@@ -495,45 +523,103 @@ def ffmpeg_candidates(explicit: str | None = None) -> list[str]:
     return unique
 
 
+ACCURATE_HEADROOM = 5.0  # seconds decoded before the target when a fast seek comes back empty
+
+
+def _seek_attempts(moment: float) -> list[tuple[float | None, float | None]]:
+    """Seeks to try for one frame, cheapest first: (before -i, after -i).
+
+    Seeking before `-i` is the fast path. It comes back empty for some MPEG-TS
+    captures (their timestamps start at a non-zero offset, so a seek near the
+    tail lands past the last packet) and it can land on a frame whose references
+    were never decoded. The middle attempt seeks a headroom before the target
+    and then trims after `-i`, which decodes a few seconds but is always
+    accurate; the last one decodes from the very start.
+    """
+    target = max(0.0, moment)
+    attempts: list[tuple[float | None, float | None]] = [(target, None)]
+    coarse = max(0.0, target - ACCURATE_HEADROOM)
+    if coarse > 0:
+        attempts.append((coarse, target - coarse))
+    attempts.append((None, target))
+    return attempts
+
+
+def scale_filter(width: int, height: int) -> str:
+    """Fit any frame into the cell: scale down/up, then pad with black bars."""
+    return (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+    )
+
+
+def _grab_command(
+    video: Path, probe: Probe, binary: str, threads: int, hwaccel: str,
+    before: float | None, after: float | None, normalize: bool,
+) -> list[str]:
+    on_gpu = hwaccel == "cuda"
+    command: list[str] = [binary, "-v", "error", "-nostdin"]
+    if on_gpu:
+        command += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+    if threads > 0:
+        command += ["-threads", str(threads)]
+    if before is not None:
+        command += ["-ss", f"{before:.3f}"]
+    command += ["-i", str(video)]
+    if after is not None:
+        command += ["-ss", f"{after:.3f}"]
+    command += ["-frames:v", "1"]
+    filters: list[str] = []
+    if on_gpu:
+        filters += ["hwdownload", "format=nv12", "format=bgr24"]
+    if normalize:
+        filters.append(scale_filter(probe.width, probe.height))
+        filters.append("format=bgr24" if on_gpu else "format=rgb24")
+    if filters:
+        command += ["-vf", ",".join(filters)]
+    command += ["-f", "rawvideo", "-pix_fmt", "bgr24" if on_gpu else "rgb24", "pipe:1"]
+    return command
+
+
 def grab_frame_ffmpeg(
     video: Path, moment: float, probe: Probe, binary: str, threads: int = 0, hwaccel: str = "none"
 ) -> Image.Image:
-    """Decode one frame at `moment` with a fast accurate seek, as raw RGB.
+    """Decode one frame at `moment` as raw RGB, retrying the seek when needed.
 
     `threads` caps ffmpeg's own decoder threads; when several processes run at
     once, letting each grab all cores just makes them fight over them.
     `hwaccel="cuda"` decodes on the GPU and downloads the frame as 24-bit BGR,
     which Pillow reads through its "BGR" raw mode.
+
+    A healthy file succeeds on the first, fastest attempt. The remaining ones
+    cost time, so they only run when a frame came back empty or at another size
+    (a file spliced out of 720p and 1080p parts reports one size but hands out
+    both).
     """
     on_gpu = hwaccel == "cuda"
-    command = [
-        binary,
-        "-v", "error",
-        "-nostdin",
-        *(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"] if on_gpu else []),
-        *(["-threads", str(threads)] if threads > 0 else []),
-        "-ss", f"{moment:.3f}",
-        "-i", str(video),
-        "-frames:v", "1",
-        *(["-vf", "hwdownload,format=nv12,format=bgr24"] if on_gpu else []),
-        "-f", "rawvideo",
-        "-pix_fmt", "bgr24" if on_gpu else "rgb24",
-        "pipe:1",
-    ]
-    extra = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
-    try:
-        done = subprocess.run(command, capture_output=True, check=False, timeout=120, **extra)
-    except subprocess.TimeoutExpired as exc:
-        raise FrameError("ffmpeg took too long (120 s) to produce one frame") from exc
-    except OSError as exc:
-        raise FrameError(f"cannot run ffmpeg ({exc})") from exc
     expected = probe.width * probe.height * 3
-    if done.returncode != 0 or len(done.stdout) != expected:
-        message = short_error(done.stderr.decode("utf-8", "replace")) or "no picture returned"
-        raise FrameError(message)
-    if on_gpu:
-        return Image.frombytes("RGB", (probe.width, probe.height), done.stdout, "raw", "BGR", 0, 1)
-    return Image.frombytes("RGB", (probe.width, probe.height), done.stdout)
+    extra = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+    last = "no picture returned"
+    for before, after in _seek_attempts(moment):
+        for normalize in (False, True):
+            command = _grab_command(video, probe, binary, threads, hwaccel, before, after, normalize)
+            try:
+                done = subprocess.run(command, capture_output=True, check=False, timeout=120, **extra)
+            except subprocess.TimeoutExpired as exc:
+                raise FrameError("ffmpeg took too long (120 s) to produce one frame") from exc
+            except OSError as exc:
+                raise FrameError(f"cannot run ffmpeg ({exc})") from exc
+            if done.returncode == 0 and len(done.stdout) == expected:
+                if on_gpu:
+                    return Image.frombytes("RGB", (probe.width, probe.height), done.stdout, "raw", "BGR", 0, 1)
+                return Image.frombytes("RGB", (probe.width, probe.height), done.stdout)
+            message = short_error(done.stderr.decode("utf-8", "replace"))
+            if message:
+                last = message
+            elif done.stdout and len(done.stdout) % 3 == 0:
+                pixels = len(done.stdout) // 3
+                last = f"frame came back as {pixels} pixels, expected {probe.width}x{probe.height}"
+    raise FrameError(last)
 
 
 def decode_plan(frame_count: int, requested: int = 0) -> tuple[int, int]:
@@ -685,14 +771,20 @@ def frame_source(
     def chunk_frames(chunk: Sequence[float], folder: Path, threads: int) -> list[Image.Image]:
         try:
             paths = extract_chunk(job, chunk, folder, state["binary"], threads, state["mode"])
+            return [load_bmp(path) for path in paths]
         except FrameError:
-            if state["mode"] != "cuda":
-                raise
-            state["mode"] = "none"  # GPU refused a chunk: keep going on the CPU
-            if used is not None:
-                used["mode"] = "none"
-            paths = extract_chunk(job, chunk, folder, state["binary"], threads, "none")
-        return [load_bmp(path) for path in paths]
+            if state["mode"] == "cuda":
+                state["mode"] = "none"  # GPU refused a chunk: keep going on the CPU
+                if used is not None:
+                    used["mode"] = "none"
+                try:
+                    paths = extract_chunk(job, chunk, folder, state["binary"], threads, "none")
+                    return [load_bmp(path) for path in paths]
+                except FrameError:
+                    pass
+        # A batched run fails as a whole when one timestamp is bad, so fall back
+        # to one process per frame, which retries the seek on its own.
+        return [single(0, moment) for moment in chunk]
 
     workdir = Path(tempfile.mkdtemp(prefix="qvp-frames-"))
     try:
@@ -862,6 +954,26 @@ def stamp(image: Image.Image, text: str, color: str, font: ImageFont.ImageFont, 
     )
 
 
+def fit_frame(image: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """Scale a frame into `size`, keeping its aspect and adding black bars.
+
+    Only used when a frame arrives at another size than the probe reported:
+    a file spliced out of parts with different resolutions (720p then 1080p)
+    reports one size and hands out both, and a stale cached frame can differ
+    by a pixel.
+    """
+    if image.size == size:
+        return image
+    width, height = size
+    scale = min(width / image.width, height / image.height)
+    scaled = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))))
+    canvas = Image.new("RGB", size, "black")
+    canvas.paste(scaled, ((width - scaled.width) // 2, (height - scaled.height) // 2))
+    scaled.close()
+    image.close()
+    return canvas
+
+
 def render_job(job: Job, opts: Options) -> Result:
     started = time.perf_counter()
     layout = job.layout
@@ -881,10 +993,7 @@ def render_job(job: Job, opts: Options) -> Result:
         ) as frames:
             for index, (moment, image) in enumerate(zip(job.times, frames)):
                 if image.size != (job.probe.width, job.probe.height):
-                    raise FrameError(
-                        f"frame {image.size[0]}x{image.size[1]} does not match the "
-                        f"probed {job.probe.width}x{job.probe.height}"
-                    )
+                    image = fit_frame(image, (job.probe.width, job.probe.height))
                 if image.mode != "RGB":
                     image = image.convert("RGB")
                 stamp(image, format_timecode(moment, opts.time_format), opts.color, font, layout.border)
@@ -1043,7 +1152,9 @@ def describe(result: Result) -> str:
 def render_report(results: Sequence[Result], elapsed: float) -> str:
     headers = ("#", "file", "grid", "frames", "canvas", "time", "result")
     rows = []
-    for index, result in enumerate(results, 1):
+    ranks = {"ok": 0, "planned": 1, "skipped": 2, "failed": 3}
+    ordered = sorted(enumerate(results, 1), key=lambda pair: (ranks.get(pair[1].status, 9), pair[0]))
+    for index, result in ordered:
         canvas = f"{result.canvas[0]}x{result.canvas[1]}" if result.canvas else "-"
         rows.append(
             (
