@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.9.3
+
+- Rotation metadata is honoured: a clip tagged 90 degrees is probed upright and its cells match the decoded frames, instead of being transposed inside a landscape cell.
+- Ctrl-C stops the ffmpeg processes that are running; it no longer waits for a 120 s or 25 min timeout per child.
+- `-j` shares one decode budget instead of multiplying it, so four parallel videos no longer start sixteen decoders.
+- `--frames` above 25 asks for an explicit `--grid` instead of failing per file; a path that does not exist exits `2`; `--quality` help no longer claims the wrong default.
+- Redirected output is UTF-8, so emoji file names survive a pipe or a log file.
+- AVIF sheets are verified by header only, the stale-temp scan runs once per folder, and the batched decode path is covered by tests.
+
 ## v2.9.1
 
 - Documentation only: the READMEs describe the current encoder settings instead of comparing them with older ones, the pixel budget in the docs matches the 320 MP default, example commands quote their paths, and the folder tree explains every file.

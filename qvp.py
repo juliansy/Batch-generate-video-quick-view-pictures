@@ -24,31 +24,34 @@ Exit codes: 0 all ok or skipped, 1 at least one failure, 2 bad arguments,
 from __future__ import annotations
 
 import argparse
+import errno
 import io
 import json
 import math
 import os
 import re
 import shutil
-import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 import uuid
 import warnings
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
 from PIL import Image, ImageColor, ImageDraw, ImageFont
 
-# Sheets are opened only after we wrote them ourselves, so Pillow's
-# decompression-bomb guard would just warn on legitimate 4K canvases.
-Image.MAX_IMAGE_PIXELS = None
+# Pillow refuses to open images above 178 MP unless told otherwise. Sheets are
+# our own output, so the guard is lifted only while we read one of them instead
+# of process-wide: a bomb in someone else's file is still caught.
+_OPEN_LOCK = threading.Lock()
 
 # --------------------------------------------------------------------------
 # Defaults - editing these still works, the command line overrides them.
@@ -90,7 +93,7 @@ GPU_CHUNK_WORKERS = 2     # concurrent GPU processes: more than this starts swap
 BORDER_SIZE = 2          # white border around every frame, in pixels
 TEXT_COLOR = "red"       # timecode colour
 
-VERSION = "2.9.1"
+VERSION = "2.9.3"
 JPEG_QUALITY = 82         # 4:4:4 at 82 matches q85 4:2:0 in bytes, sharper on text
 JPEG_SUBSAMPLING = "4:4:4"  # chroma at full resolution: text survives compression
 AVIF_QUALITY = 60         # AVIF at 60 looks like JPEG at 84 and is ~3x smaller
@@ -245,7 +248,7 @@ def parse_grid(text: str) -> tuple[int, int]:
         .replace(" ", "")
     )
     parts = cleaned.split("x")
-    if len(parts) != 2 or not all(p.strip().isdigit() for p in parts):
+    if len(parts) != 2 or not all(p.strip().isascii() and p.strip().isdigit() for p in parts):
         raise UsageError(f"invalid grid {text!r}: expected COLUMNSxROWS, e.g. 4x4")
     cols, rows = (int(p) for p in parts)
     if not (1 <= cols <= 16 and 1 <= rows <= 16):
@@ -262,7 +265,7 @@ def sample_times(duration: float, count: int, fps: float = 0.0) -> tuple[float, 
     """
     if count < 1:
         raise UsageError("frame count must be at least 1")
-    if not duration or duration <= 0 or math.isnan(duration):
+    if not duration or duration <= 0 or not math.isfinite(duration):
         raise ProbeError("video has no usable duration")
     decay = 1.5 / fps if fps and fps > 0 else 0.05
     edge = min(EDGE_INSET, duration / 4)
@@ -293,7 +296,9 @@ def grid_for_frames(count: int) -> tuple[int, int]:
     for _, shape in GRID_PRESETS:
         if shape[0] * shape[1] >= count:
             return shape
-    raise UsageError("more than 25 frames do not fit in a 5x5 grid")
+    raise UsageError(
+        f"{count} frames do not fit the automatic 5x5 grid - pass -g COLUMNSxROWS to choose a bigger sheet"
+    )
 
 
 def auto_grid(duration: float, width: int, height: int, border: int, max_pixels: int) -> tuple[int, int]:
@@ -348,10 +353,70 @@ def color_or_raise(spec: str) -> str:
     return spec
 
 
+_OS_ERROR_TEXT = {
+    errno.EACCES: "access denied",
+    errno.EPERM: "not permitted",
+    errno.ENOENT: "no such file or folder",
+    errno.ENOSPC: "no space left on the disk",
+    errno.EROFS: "read-only location",
+    errno.EEXIST: "already exists",
+    errno.ENAMETOOLONG: "name too long",
+    errno.EBUSY: "file is in use",
+}
+
+
+_RUNNING: set[subprocess.Popen] = set()
+_RUNNING_LOCK = threading.Lock()
+
+
+def run_tool(command: Sequence[str], timeout: float) -> tuple[int, bytes, bytes]:
+    """Run ffmpeg/ffprobe, keeping a handle so Ctrl-C can stop it.
+
+    subprocess.run() hides the process, so an interrupt would wait for the
+    120 s (or 25 min batch) timeout before the children died. Registering the
+    handle lets kill_running() end them at once.
+    """
+    extra = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **extra)
+    with _RUNNING_LOCK:
+        _RUNNING.add(process)
+    try:
+        out, err = process.communicate(timeout=timeout)
+        return process.returncode, out, err
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        process.communicate()
+        raise FrameError(f"ffmpeg took too long ({int(timeout)} s)") from exc
+    finally:
+        with _RUNNING_LOCK:
+            _RUNNING.discard(process)
+
+
+def kill_running() -> None:
+    """Stop every ffmpeg/ffprobe started by this run (Ctrl-C path)."""
+    with _RUNNING_LOCK:
+        processes = list(_RUNNING)
+    for process in processes:
+        try:
+            process.kill()
+        except OSError:
+            continue
+
+
+def english_oserror(exc: OSError) -> str:
+    """Stable English text for an OSError.
+
+    `exc.strerror` follows the system language, which turns a report into a
+    mix of English labels and a localised sentence (and mojibake on a console
+    whose code page does not match). Known errno values get a fixed phrase.
+    """
+    return _OS_ERROR_TEXT.get(exc.errno or 0, exc.strerror or str(exc))
+
+
 def short_error(exc: BaseException, limit: int = 120) -> str:
     """One readable line out of a moviepy/ffmpeg exception, without paths."""
     text = " ".join(str(exc).replace("\r", " ").replace("\n", " ").split())
-    text = re.sub(r"[A-Za-z]:\\[^\s\"']+", "<file>", text)
+    text = re.sub(r"(?:[A-Za-z]:\\|\\\\[^\\\s]+\\|/(?:[^\s/]+/)+)[^\s\"']*", "<file>", text)
     for fragment in ("Error opening input files:", "Error opening input file", "Traceback (most recent call last)"):
         if fragment in text:
             text = text.split(fragment)[-1]
@@ -441,22 +506,22 @@ def _probe_ffprobe(path: Path, binary: str) -> Probe:
         binary,
         "-v", "error",
         "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,codec_name,avg_frame_rate,r_frame_rate:format=duration",
+        "-show_entries",
+        "stream=width,height,codec_name,avg_frame_rate,r_frame_rate:stream_side_data=rotation:format=duration",
         "-of", "json",
         str(path),
     ]
-    extra = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     try:
-        done = subprocess.run(command, capture_output=True, check=False, timeout=60, **extra)
-    except subprocess.TimeoutExpired as exc:
+        code, out, err = run_tool(command, 60)
+    except FrameError as exc:
         raise ProbeError("ffprobe took too long (60 s)") from exc
     except OSError as exc:
         raise ProbeError(f"cannot run ffprobe ({exc})") from exc
-    if done.returncode != 0 or not done.stdout.strip():
-        message = short_error(done.stderr.decode("utf-8", "replace")) or "cannot read video"
+    if code != 0 or not out.strip():
+        message = short_error(err.decode("utf-8", "replace")) or "cannot read video"
         raise ProbeError(message)
     try:
-        data = json.loads(done.stdout.decode("utf-8", "replace"))
+        data = json.loads(out.decode("utf-8", "replace"))
     except ValueError as exc:
         raise ProbeError("ffprobe returned unreadable JSON") from exc
     streams = data.get("streams") or []
@@ -464,6 +529,16 @@ def _probe_ffprobe(path: Path, binary: str) -> Probe:
         raise ProbeError("no video stream")
     stream = streams[0]
     width, height = int(stream.get("width") or 0), int(stream.get("height") or 0)
+    # Phones store a landscape frame plus a rotation flag; ffmpeg decodes it
+    # upright, so the stream size is only right after swapping the two sides.
+    rotation = 0
+    for side in stream.get("side_data_list") or []:
+        if "rotation" in side:
+            rotation = int(side["rotation"])
+    if not rotation:
+        rotation = int((stream.get("tags") or {}).get("rotate") or 0)
+    if rotation % 180 == 90:
+        width, height = height, width
     codec = str(stream.get("codec_name") or "")
     fps = _rate(stream.get("avg_frame_rate") or "") or _rate(stream.get("r_frame_rate") or "")
     duration = float((data.get("format") or {}).get("duration") or 0.0)
@@ -485,15 +560,25 @@ def _probe_moviepy(path: Path) -> Probe:
         raise ProbeError("moviepy 2.x is required (pip install 'moviepy>=2')") from exc
     except Exception as exc:  # moviepy raises a zoo of types; all mean "cannot open"
         raise ProbeError(short_error(exc)) from exc
-    if duration <= 0 or math.isnan(duration):
+    if duration <= 0 or not math.isfinite(duration):
         raise ProbeError("video has no usable duration")
     return Probe(width, height, duration, fps)
 
 
 def probe_video(path: Path, ffmpeg: str | None = None) -> Probe:
-    """ffprobe first (70 ms vs 1 s for moviepy), moviepy only when it is absent."""
+    """ffprobe first (70 ms vs 1 s for moviepy), moviepy only when it is absent.
+
+    Every candidate is tried: a broken ffprobe next to a good one should cost a
+    retry, not the whole batch.
+    """
+    last: ProbeError | None = None
     for binary in ffprobe_candidates(ffmpeg):
-        return _probe_ffprobe(path, binary)
+        try:
+            return _probe_ffprobe(path, binary)
+        except ProbeError as exc:
+            last = exc
+    if last is not None:
+        raise last
     return _probe_moviepy(path)
 
 
@@ -587,7 +672,13 @@ def _grab_command(
 
 
 def grab_frame_ffmpeg(
-    video: Path, moment: float, probe: Probe, binary: str, threads: int = 0, hwaccel: str = "none"
+    video: Path,
+    moment: float,
+    probe: Probe,
+    binary: str,
+    threads: int = 0,
+    hwaccel: str = "none",
+    prefer_normalize: bool = False,
 ) -> Image.Image:
     """Decode one frame at `moment` as raw RGB, retrying the seek when needed.
 
@@ -603,26 +694,24 @@ def grab_frame_ffmpeg(
     """
     on_gpu = hwaccel == "cuda"
     expected = probe.width * probe.height * 3
-    extra = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     last = "no picture returned"
+    order = (True, False) if prefer_normalize else (False, True)
     for before, after in _seek_attempts(moment):
-        for normalize in (False, True):
+        for normalize in order:
             command = _grab_command(video, probe, binary, threads, hwaccel, before, after, normalize)
             try:
-                done = subprocess.run(command, capture_output=True, check=False, timeout=120, **extra)
-            except subprocess.TimeoutExpired as exc:
-                raise FrameError("ffmpeg took too long (120 s) to produce one frame") from exc
+                code, out, err = run_tool(command, 120)
             except OSError as exc:
                 raise FrameError(f"cannot run ffmpeg ({exc})") from exc
-            if done.returncode == 0 and len(done.stdout) == expected:
+            if code == 0 and len(out) == expected:
                 if on_gpu:
-                    return Image.frombytes("RGB", (probe.width, probe.height), done.stdout, "raw", "BGR", 0, 1)
-                return Image.frombytes("RGB", (probe.width, probe.height), done.stdout)
-            message = short_error(done.stderr.decode("utf-8", "replace"))
+                    return Image.frombytes("RGB", (probe.width, probe.height), out, "raw", "BGR", 0, 1)
+                return Image.frombytes("RGB", (probe.width, probe.height), out)
+            message = short_error(err.decode("utf-8", "replace"))
             if message:
                 last = message
-            elif done.stdout and len(done.stdout) % 3 == 0:
-                pixels = len(done.stdout) // 3
+            elif out and len(out) % 3 == 0:
+                pixels = len(out) // 3
                 last = f"frame came back as {pixels} pixels, expected {probe.width}x{probe.height}"
     raise FrameError(last)
 
@@ -641,7 +730,23 @@ def decode_plan(frame_count: int, requested: int = 0) -> tuple[int, int]:
         workers = min(MAX_DECODE_WORKERS, max(1, cpu // 4), max(1, frame_count))
     if workers < 2:
         return 1, 0
-    return workers, max(1, cpu // workers)
+    # Let each ffmpeg decide its own thread count. Capping it at cpu/workers
+    # measured slower (19 s vs 13 s on a 166 MP 4K sheet): a decoder spends part
+    # of its time waiting on seek and I/O, so the busy process wants more
+    # threads than its share of the cores.
+    return workers, 0
+
+
+def worker_budget(jobs: int, requested: int = 0) -> int:
+    """Decode processes one render may start, given the whole-run budget.
+
+    `--jobs 4` used to multiply the per-video plan, so four videos each sized
+    against every core could start sixteen ffmpeg processes. The budget is
+    shared instead: total decoders stay around cpu/4 whatever `-j` says.
+    """
+    cpu = os.cpu_count() or 1
+    total = requested if requested > 0 else max(1, min(MAX_DECODE_WORKERS, cpu // 4))
+    return max(1, total // max(1, jobs))
 
 
 def hardware_modes(use_cuda: bool) -> tuple[str, ...]:
@@ -690,17 +795,14 @@ def extract_chunk(
     folder.mkdir(parents=True, exist_ok=True)
     outputs = [folder / f"f{index:03d}.bmp" for index in range(len(times))]
     command = batched_command(job.video, times, outputs, binary, threads, hwaccel)
-    extra = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     budget = max(120, int(len(times) * 60))
     try:
-        done = subprocess.run(command, capture_output=True, check=False, timeout=budget, **extra)
-    except subprocess.TimeoutExpired as exc:
-        raise FrameError(f"ffmpeg took too long ({budget} s) to fetch {len(times)} frames") from exc
+        code, _, err = run_tool(command, budget)
     except OSError as exc:
         raise FrameError(f"cannot run ffmpeg ({exc})") from exc
     missing = [path for path in outputs if not path.is_file() or path.stat().st_size == 0]
-    if done.returncode != 0 or missing:
-        message = short_error(done.stderr.decode("utf-8", "replace")) or "no picture returned"
+    if code != 0 or missing:
+        message = short_error(err.decode("utf-8", "replace")) or "no picture returned"
         raise FrameError(message)
     return outputs
 
@@ -754,15 +856,16 @@ def frame_source(
     if used is not None:
         used["mode"] = mode
     back = max(0.05, 2.0 / job.probe.fps) if job.probe.fps > 0 else 0.2
-    state = {"mode": mode, "binary": chosen}
+    state = {"mode": mode, "binary": chosen, "normalize": False}
     total = len(job.times)
     per_process = seeks_per_process(mode, batch_seek)
 
-    def single(index: int, moment: float) -> Image.Image:
-        cap = 0
+    def single(index: int, moment: float, cap: int = 0) -> Image.Image:
         active = state["mode"]
         try:
-            return grab_frame_ffmpeg(job.video, moment, job.probe, state["binary"], cap, active)
+            return grab_frame_ffmpeg(
+                job.video, moment, job.probe, state["binary"], cap, active, state["normalize"]
+            )
         except FrameError:
             if active == "cuda":
                 state["mode"] = "none"
@@ -794,7 +897,7 @@ def frame_source(
     workdir = Path(tempfile.mkdtemp(prefix="qvp-frames-"))
     try:
         if per_process <= 1 or total <= 1:
-            pool_size, _threads = decode_plan(total - 1, workers) if total > 1 else (1, 0)
+            pool_size, cpu_threads = decode_plan(total - 1, workers) if total > 1 else (1, 0)
             pool = ThreadPoolExecutor(max_workers=pool_size) if pool_size > 1 else None
             futures: dict[int, Future[Image.Image]] = {}
             submitted = 1
@@ -805,7 +908,7 @@ def frame_source(
                     return
                 limit = min(total, index + pool_size + 1)
                 while submitted < limit:
-                    futures[submitted] = pool.submit(single, submitted, job.times[submitted])
+                    futures[submitted] = pool.submit(single, submitted, job.times[submitted], cpu_threads)
                     submitted += 1
 
             keep_full(0)
@@ -831,13 +934,14 @@ def frame_source(
         chunks = [job.times[start:start + per_process] for start in range(0, total, per_process)]
         if state["mode"] == "cuda" and workers == 0:
             chunk_workers = min(GPU_CHUNK_WORKERS, len(chunks))
+            chunk_threads = 0
         else:
-            chunk_workers = decode_plan(len(chunks), workers)[0]
+            chunk_workers, chunk_threads = decode_plan(len(chunks), workers)
 
         def chunked():
             pool = ThreadPoolExecutor(max_workers=min(chunk_workers, len(chunks)))
             futures = {
-                index: pool.submit(chunk_frames, chunk, workdir / f"c{index}", 0)
+                index: pool.submit(chunk_frames, chunk, workdir / f"c{index}", chunk_threads)
                 for index, chunk in enumerate(chunks)
             }
             try:
@@ -993,7 +1097,11 @@ def render_job(job: Job, opts: Options) -> Result:
         font = load_font(size, opts.font)
         used: dict[str, str] = {}
         with frame_source(
-            job, ffmpeg_candidates(opts.ffmpeg), opts.decode_workers, opts.cuda, used,
+            job,
+            ffmpeg_candidates(opts.ffmpeg),
+            worker_budget(opts.jobs, opts.decode_workers),
+            opts.cuda,
+            used,
             opts.batch_seek,
         ) as frames:
             for index, (moment, image) in enumerate(zip(job.times, frames)):
@@ -1013,7 +1121,7 @@ def render_job(job: Job, opts: Options) -> Result:
                 )
         save_sheet(canvas, tmp, opts)
         verify_image(tmp, canvas_size)
-        os.replace(tmp, job.output)
+        replace_with_retry(tmp, job.output)
     except UsageError as exc:
         return finish_failure(job, tmp, started, str(exc))
     except ValueError as exc:
@@ -1023,7 +1131,7 @@ def render_job(job: Job, opts: Options) -> Result:
     except ProbeError as exc:
         return finish_failure(job, tmp, started, f"cannot open video ({exc})")
     except OSError as exc:
-        return finish_failure(job, tmp, started, f"cannot write output ({exc.strerror or exc})")
+        return finish_failure(job, tmp, started, f"cannot write output ({english_oserror(exc)})")
     except Exception as exc:  # decoding, memory, anything else: isolate this file
         return finish_failure(job, tmp, started, f"render failed ({short_error(exc)})")
     finally:
@@ -1046,8 +1154,35 @@ def render_job(job: Job, opts: Options) -> Result:
     )
 
 
+def replace_with_retry(source: Path, target: Path, attempts: int = 4) -> None:
+    """os.replace, retried briefly: Windows can refuse while another run has
+    the target open (a viewer, an indexer, or a second qvp on the same folder).
+    """
+    delay = 0.1
+    for attempt in range(1, attempts + 1):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == attempts:
+                raise
+            time.sleep(delay)
+            delay *= 2
+
+
+_SCANNED: set[str] = set()
+
+
 def clean_stale_temps(output: Path, max_age: float = 3600.0) -> None:
-    """Remove temp files left behind by a killed run (older than an hour)."""
+    """Remove temp files left behind by a killed run (older than an hour).
+
+    One scan per output folder per run: the check used to repeat for every
+    video, which is quadratic when a thousand sheets land in one folder.
+    """
+    key = os.path.normcase(str(output.parent))
+    if key in _SCANNED:
+        return
+    _SCANNED.add(key)
     now = time.time()
     try:
         for item in output.parent.iterdir():
@@ -1093,16 +1228,39 @@ def save_sheet(canvas: Image.Image, path: Path, opts: "Options") -> None:
     )
 
 
+@contextmanager
+def sheet_open(path: Path):
+    """Open one of our own sheets without the decompression-bomb guard.
+
+    The guard is lifted for this call only, then put back, so a hostile image
+    opened elsewhere in the process still trips it.
+    """
+    with _OPEN_LOCK:
+        previous = Image.MAX_IMAGE_PIXELS
+        Image.MAX_IMAGE_PIXELS = None
+        try:
+            with Image.open(path) as image:
+                yield image
+        finally:
+            Image.MAX_IMAGE_PIXELS = previous
+
+
 def verify_image(path: Path, expected: tuple[int, int]) -> None:
-    """Header check plus a 1/8 decode: proves the file is readable without
-    decoding the whole 33 MP (or 133 MP) sheet back into memory."""
-    with Image.open(path) as probe:
+    """Header check plus a 1/8 decode for JPEG: proves the file is readable
+    without decoding the whole sheet back into memory.
+
+    draft() only downscales JPEG; for AVIF it returns None and leaves the full
+    image, so other formats are checked by header alone - re-decoding 200 MP
+    just to prove it opens would cost more than the render did.
+    """
+    with sheet_open(path) as probe:
         if probe.size != expected:
             raise ValueError(f"unexpected size {probe.size[0]}x{probe.size[1]}")
         if probe.mode != "RGB":
             raise ValueError(f"unexpected mode {probe.mode}")
-        probe.draft("RGB", (max(1, probe.size[0] // 8), max(1, probe.size[1] // 8)))
-        probe.load()
+        if probe.format == "JPEG":
+            probe.draft("RGB", (max(1, probe.size[0] // 8), max(1, probe.size[1] // 8)))
+            probe.load()
 
 
 def render_all(items: Sequence[Job | Result], opts: Options) -> list[Result]:
@@ -1133,10 +1291,16 @@ def render_all(items: Sequence[Job | Result], opts: Options) -> list[Result]:
         futures = [pool.submit(render_job, job, opts) for _, job in planned]
         try:
             for (index, _), future in zip(planned, futures):
-                rendered[index] = future.result()
+                while True:  # short waits keep Ctrl-C responsive with several jobs
+                    try:
+                        rendered[index] = future.result(timeout=0.2)
+                        break
+                    except FuturesTimeout:
+                        continue
                 if not opts.quiet:
                     print(f"[{rendered[index].status}] {items[index].name}")
         except KeyboardInterrupt:
+            kill_running()
             pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
@@ -1264,19 +1428,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--decode-workers",
         type=int,
         default=0,
-        help="ffmpeg processes decoding frames in parallel, 0 = auto, 1 = sequential (default: 0)",
+        help="decode processes for the whole run, shared by -j; 0 = auto (about cpu/4), 1 = sequential",
     )
     parser.add_argument("-f", "--force", action="store_true", help="overwrite existing sheets")
     parser.add_argument("-n", "--dry-run", action="store_true", help="print the plan, write nothing")
     parser.add_argument(
         "--max-pixels", type=int, default=MAX_PIXELS,
-        help="canvas pixel budget (default 320 MP; the canvas itself needs ~3 bytes per pixel in RAM)",
+        help="canvas pixel budget (default 320 MP; peak RAM is about 11 bytes per pixel)",
     )
     parser.add_argument(
         "--format", dest="image_format", choices=sorted(SHEET_FORMATS), default="jpeg",
         help="sheet format: jpeg (default, opens anywhere) or avif (~3x smaller, slower)",
     )
-    parser.add_argument("--quality", type=int, default=0, help="encoder quality 1-100 (default: 84 jpeg, 60 avif)")
+    parser.add_argument("--quality", type=int, default=0, help="encoder quality 1-100 (default: 82 jpeg, 60 avif)")
     parser.add_argument("--log", type=Path, help="append a run log to this file")
     parser.add_argument("-q", "--quiet", action="store_true", help="only print the summary line")
     parser.add_argument("-V", "--version", action="version", version=f"qvp {VERSION}")
@@ -1286,6 +1450,8 @@ def build_parser() -> argparse.ArgumentParser:
 def options_from_args(args: argparse.Namespace) -> Options:
     if args.frames is not None and not 1 <= args.frames <= 256:
         raise UsageError("--frames must be between 1 and 256")
+    if args.frames is not None and args.frames > 25 and args.grid is None:
+        raise UsageError("--frames above 25 needs an explicit --grid: auto tops out at 5x5")
     if not 0 <= args.border <= 64:
         raise UsageError("--border must be between 0 and 64")
     if not 0 <= args.batch_seek <= 25:
@@ -1341,10 +1507,13 @@ def write_log(path: Path, lines: Sequence[str]) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    for stream in (sys.stdout, sys.stderr):  # redirected consoles use cp936/gbk
+    for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             try:
-                stream.reconfigure(errors="replace")
+                if stream.isatty():
+                    stream.reconfigure(errors="replace")  # console fonts decide the glyphs
+                else:
+                    stream.reconfigure(encoding="utf-8", errors="replace")  # pipes/files: keep code points
             except (ValueError, OSError):
                 pass
     parser = build_parser()
@@ -1366,6 +1535,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     for path in missing:
         print(f"warning: not found or not a video: {path}", file=sys.stderr)
     if not videos:
+        if missing:
+            print("no videos found: every path given was missing or not a video", file=sys.stderr)
+            return 2
         print("no videos found")
         return 0
 

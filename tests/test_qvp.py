@@ -337,8 +337,15 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertTrue((folder / qvp.OUT_DIR_NAME / "课程 01 🎬_collage.jpg").exists())
 
-    def test_missing_path_is_a_warning_not_a_crash(self):
+    def test_missing_path_is_reported_as_a_bad_argument(self):
         code, output = run_main([str(self.base / "nope"), "-q"])
+        self.assertEqual(code, 2)
+        self.assertIn("no videos found", output)
+
+    def test_empty_folder_is_not_an_error(self):
+        folder = self.base / "empty-folder"
+        folder.mkdir(exist_ok=True)
+        code, output = run_main([str(folder), "-q"])
         self.assertEqual(code, 0)
         self.assertIn("no videos found", output)
 
@@ -370,9 +377,16 @@ class EndToEndTests(unittest.TestCase):
         self.assertLess(done, skipped, table)
         self.assertLess(skipped, failed, table)
         # every failure sits at the bottom, so the block can be copied in one go
-        failing_rows = [line for line in table.splitlines() if "failed:" in line]
-        self.assertTrue(all("failed:" in line for line in table.splitlines()[table.splitlines().index(failing_rows[0]) :]) or True)
-        self.assertGreaterEqual(len(failing_rows), 2)
+        import re as _re
+
+        rows = [line for line in table.splitlines() if _re.match(r"^\d+\s{2,}\S", line)]
+        statuses = [
+            "failed" if "failed:" in line else "skipped" if "skipped:" in line else "ok"
+            for line in rows
+        ]
+        rank = {"ok": 0, "skipped": 1, "failed": 2}
+        self.assertEqual(statuses, sorted(statuses, key=rank.get), rows)
+        self.assertGreaterEqual(statuses.count("failed"), 2)
 
     def test_report_numbers_stay_in_discovery_order(self):
         folder = self.workdir("order2")
@@ -537,7 +551,8 @@ class EndToEndTests(unittest.TestCase):
         workers, threads = qvp.decode_plan(25)
         self.assertGreaterEqual(workers, 1)
         self.assertLessEqual(workers, qvp.MAX_DECODE_WORKERS)
-        self.assertEqual(workers * threads, (os.cpu_count() or 1) if workers > 1 else 0)
+        # threads stays 0: ffmpeg picks its own count, which measured faster
+        self.assertEqual(threads, 0)
         self.assertEqual(qvp.decode_plan(1), (1, 0))          # nothing to overlap
         self.assertEqual(qvp.decode_plan(25, requested=1), (1, 0))
         self.assertEqual(qvp.decode_plan(25, requested=2)[0], 2)
@@ -563,7 +578,7 @@ class EndToEndTests(unittest.TestCase):
 
     def test_batched_and_per_frame_sheets_match(self):
         batched = self.workdir("batch-default")
-        code, output = run_main([str(batched), "-f", "-g", "3x3", "--frames", "9"])
+        code, output = run_main([str(batched), "-f", "-g", "3x3", "--frames", "9", "--batch-seek", "4"])
         self.assertEqual(code, 0, output)
         single = self.workdir("batch-one")
         code, output = run_main([str(single), "-f", "-g", "3x3", "--frames", "9", "--batch-seek", "1"])
@@ -590,10 +605,10 @@ class EndToEndTests(unittest.TestCase):
 
         original = qvp.grab_frame_ffmpeg
 
-        def fake(video, moment, probe, binary, threads=0, hwaccel="none"):
+        def fake(video, moment, probe, binary, threads=0, hwaccel="none", prefer_normalize=False):
             if hwaccel == "cuda":
                 raise qvp.FrameError("no GPU here")
-            return original(video, moment, probe, binary, threads, "none")
+            return original(video, moment, probe, binary, threads, "none", prefer_normalize)
 
         folder = self.workdir("fallback")
         with mock.patch.object(qvp, "grab_frame_ffmpeg", side_effect=fake):
@@ -803,6 +818,186 @@ class OutputFormatTests(unittest.TestCase):
     def test_output_name_takes_a_suffix(self):
         self.assertEqual(qvp.output_name("talk", ".avif"), "talk_collage.avif")
         self.assertEqual(qvp.output_name("talk"), "talk_collage.jpg")
+
+
+class AuditFixTests(unittest.TestCase):
+    def test_frames_above_twenty_five_need_an_explicit_grid(self):
+        code, output = run_main(["--frames", "30", "-n"])
+        self.assertEqual(code, 2)
+        self.assertIn("needs an explicit --grid", output)
+
+    def test_frames_above_twenty_five_work_with_a_grid(self):
+        if not FFMPEG:
+            self.skipTest("ffmpeg not available")
+        folder = Path(tempfile.mkdtemp(prefix="qvp-frames30-"))
+        try:
+            make_clip(folder / "clip.mp4", seconds=3)
+            code, output = run_main([str(folder), "--frames", "30", "-g", "6x5", "-f"])
+            self.assertEqual(code, 0, output)
+            self.assertIn("30", output)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+
+    def test_os_errors_are_english(self):
+        import errno
+
+        self.assertEqual(qvp.english_oserror(OSError(errno.EACCES, "refused")), "access denied")
+        self.assertEqual(qvp.english_oserror(OSError(errno.ENOSPC, "vol")), "no space left on the disk")
+        self.assertEqual(qvp.english_oserror(OSError(9999, "custom text")), "custom text")
+
+    def test_replace_with_retry_survives_a_short_lock(self):
+        import errno
+        from unittest import mock
+
+        folder = Path(tempfile.mkdtemp(prefix="qvp-replace-"))
+        try:
+            source = folder / "a.tmp"
+            target = folder / "a.jpg"
+            source.write_text("x", encoding="utf-8")
+            calls = {"n": 0}
+            real = qvp.os.replace
+
+            def flaky(src, dst):
+                calls["n"] += 1
+                if calls["n"] < 3:
+                    raise PermissionError(errno.EACCES, "busy")
+                return real(src, dst)
+
+            with mock.patch.object(qvp.os, "replace", flaky):
+                qvp.replace_with_retry(source, target)
+            self.assertTrue(target.is_file())
+            self.assertEqual(calls["n"], 3)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+
+    def test_probe_falls_back_to_the_next_ffprobe(self):
+        from unittest import mock
+
+        folder = Path(tempfile.mkdtemp(prefix="qvp-probe-"))
+        try:
+            clip = make_clip(folder / "clip.mp4", seconds=1)
+            calls = []
+
+            def fake(path, binary):
+                calls.append(binary)
+                if len(calls) == 1:
+                    raise qvp.ProbeError("broken build")
+                return qvp.Probe(320, 240, 1.0, 10.0, "h264")
+
+            with mock.patch.object(qvp, "_probe_ffprobe", fake), \
+                 mock.patch.object(qvp, "ffprobe_candidates", lambda explicit=None: ["a", "b"]):
+                probe = qvp.probe_video(clip)
+            self.assertEqual(probe.width, 320)
+            self.assertEqual(calls, ["a", "b"])
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+
+    def test_stale_temps_are_removed_old_ones_kept(self):
+        import os
+        import time as _time
+
+        folder = Path(tempfile.mkdtemp(prefix="qvp-stale-"))
+        try:
+            output = folder / "clip_collage.jpg"
+            old = folder / ".clip_collage.jpg.tmp-1-old"
+            fresh = folder / ".clip_collage.jpg.tmp-2-fresh"
+            old.write_text("x", encoding="utf-8")
+            fresh.write_text("x", encoding="utf-8")
+            two_hours = _time.time() - 7200
+            os.utime(old, (two_hours, two_hours))
+            qvp.clean_stale_temps(output)
+            self.assertFalse(old.exists())
+            self.assertTrue(fresh.exists())
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+
+
+class SecondAuditTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not FFMPEG:
+            raise unittest.SkipTest("ffmpeg not available")
+        cls.base = Path(tempfile.mkdtemp(prefix="qvp-audit2-"))
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.base, ignore_errors=True)
+
+    def test_rotated_video_is_probed_upright(self):
+        source = make_clip(self.base / "plain.mp4", seconds=1, size="320x180")
+        rotated = self.base / "rotated.mp4"
+        done = subprocess.run(
+            [FFMPEG, "-v", "error", "-y", "-display_rotation", "90", "-i", str(source),
+             "-c", "copy", str(rotated)],
+            capture_output=True,
+        )
+        if done.returncode != 0 or not rotated.is_file():
+            self.skipTest("ffmpeg cannot set display rotation here")
+        probe = qvp.probe_video(rotated)
+        self.assertEqual((probe.width, probe.height), (180, 320))
+
+    def test_rotated_video_renders_with_the_upright_grid(self):
+        source = make_clip(self.base / "plain2.mp4", seconds=1, size="320x180")
+        rotated = self.base / "rotated2.mp4"
+        done = subprocess.run(
+            [FFMPEG, "-v", "error", "-y", "-display_rotation", "90", "-i", str(source),
+             "-c", "copy", str(rotated)],
+            capture_output=True,
+        )
+        if done.returncode != 0 or not rotated.is_file():
+            self.skipTest("ffmpeg cannot set display rotation here")
+        folder = self.base / "rot-run"
+        folder.mkdir(exist_ok=True)
+        shutil.copy(rotated, folder / "rotated2.mp4")
+        code, output = run_main([str(folder), "-f", "--frames", "4"])
+        self.assertEqual(code, 0, output)
+        from PIL import Image as PILImage
+
+        with PILImage.open(folder / qvp.OUT_DIR_NAME / "rotated2_collage.jpg") as sheet:
+            cols, rows = qvp.grid_for_frames(4)  # --frames 4 overrides the ladder
+            self.assertEqual(sheet.size, (cols * (180 + 2 * qvp.BORDER_SIZE), rows * (320 + 2 * qvp.BORDER_SIZE)))
+
+    def test_run_tool_tracks_and_clears_processes(self):
+        import sys as _sys
+
+        code, out, err = qvp.run_tool([_sys.executable, "-c", "print('ok')"], 30)
+        self.assertEqual(code, 0)
+        self.assertIn(b"ok", out)
+        self.assertEqual(qvp._RUNNING, set())
+
+    def test_redirected_output_keeps_emoji_names(self):
+        folder = self.base / "emoji-out"
+        folder.mkdir(exist_ok=True)
+        shutil.copy(make_clip(self.base / "emoji-src.mp4", seconds=1), folder / "🎬 clip.mp4")
+        code, output = run_main([str(folder), "-f", "--frames", "4"])
+        self.assertEqual(code, 0, output)
+        self.assertIn("🎬 clip.mp4", output)
+
+    def test_infinite_duration_is_rejected(self):
+        with self.assertRaises(qvp.ProbeError):
+            qvp.sample_times(float("inf"), 3)
+        with self.assertRaises(qvp.ProbeError):
+            qvp.sample_times(0.0, 3)
+
+    def test_non_ascii_digits_are_not_a_grid(self):
+        with self.assertRaises(qvp.UsageError):
+            qvp.parse_grid("\u00b2x\u00b2")
+
+
+class WorkerBudgetTests(unittest.TestCase):
+    def test_jobs_share_the_budget_instead_of_multiplying_it(self):
+        import os as _os
+
+        cpu = _os.cpu_count() or 1
+        total = max(1, min(qvp.MAX_DECODE_WORKERS, cpu // 4))
+        self.assertEqual(qvp.worker_budget(1), total)
+        self.assertEqual(qvp.worker_budget(4), max(1, total // 4))
+        self.assertGreaterEqual(qvp.worker_budget(64), 1)
+
+    def test_requested_budget_is_shared_too(self):
+        self.assertEqual(qvp.worker_budget(1, requested=4), 4)
+        self.assertEqual(qvp.worker_budget(4, requested=4), 1)
+        self.assertEqual(qvp.worker_budget(2, requested=4), 2)
 
 
 if __name__ == "__main__":

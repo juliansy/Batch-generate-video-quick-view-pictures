@@ -1,7 +1,10 @@
 # 02 · 流程审阅：不留情面的评判
 
+> 历史记录：本文写于 v1 → v2 重写期间，里面的行数、默认值和流程描述只反映当时的状态。当前行为以仓库根目录的 README 与 [06-auto-grid.md](06-auto-grid.md)、[07-performance.md](07-performance.md) 为准。
+
+
 审阅对象：`qvp.py` v1.1.0（76 行）与 [01-decomposition.md](01-decomposition.md) 里的流程。
-证据来源：`probe-flow/` 下的五次实跑（Python 3.12.10 / moviepy 2.1.2 / Pillow 11.3.0 / Windows）。
+证据来源：`probe-flow/` 下的五次实跑（该目录未随仓库发布，属本地实验记录）（Python 3.12.10 / moviepy 2.1.2 / Pillow 11.3.0 / Windows）。
 结论先行：**这个脚本能跑，但不能交给别人跑。** 它把“发现文件、解码、标注、拼贴、落盘、报告”六件事塞进一个循环，任何一件出错就整批消失；成功与失败都只靠一行 print 表达，退出码不可判定。下面逐条列。
 
 ## 1. 缺陷清单

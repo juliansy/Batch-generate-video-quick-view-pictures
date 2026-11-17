@@ -1,5 +1,8 @@
 # 04 · v2 代码质量评审
 
+> 历史记录：本文写于 v1 → v2 重写期间，里面的行数、默认值和流程描述只反映当时的状态。当前行为以仓库根目录的 README 与 [06-auto-grid.md](06-auto-grid.md)、[07-performance.md](07-performance.md) 为准。
+
+
 对象：`qvp.py` v2.0.0（768 行 / 28,083 字节）与 `tests/test_qvp.py`（374 行 / 38 用例）。
 方法：逐段读代码 + 跑用例 + 真实素材实测 + 独立子代理对抗式评审 + 内存采样。
 评分 1–5 分，5 为“可以交给陌生人维护”。
@@ -36,7 +39,7 @@
 | # | 严重度 | 发现 | 处理 |
 |---|---|---|---|
 | C06 | 中 | `-q` 仍会打印 `[1/2] … ok` 进度行 | 进度输出加 `not opts.quiet` 守卫；新增用例 |
-| C07 | 中 | 报表顺序与输入顺序不一致（跳过项在前、渲染结果追加在后），`#` 编号会错位 | `render_all` 改成按输入下标回填 `Result`；新增 `test_report_keeps_input_order` |
+| C07 | 中 | 报表顺序与输入顺序不一致（跳过项在前、渲染结果追加在后），`#` 编号会错位 | `render_all` 改成按输入下标回填 `Result`；新增 `test_report_numbers_stay_in_discovery_order` |
 | C08 | 低 | `--log` 写失败时警告打到 stdout | 改到 stderr |
 
 ### 2.3 安全性

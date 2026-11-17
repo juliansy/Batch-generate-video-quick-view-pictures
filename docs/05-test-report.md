@@ -1,5 +1,8 @@
 # 05 · 测试报告
 
+> 历史记录：本文写于 v1 → v2 重写期间，里面的行数、默认值和流程描述只反映当时的状态。当前行为以仓库根目录的 README 与 [06-auto-grid.md](06-auto-grid.md)、[07-performance.md](07-performance.md) 为准。
+
+
 环境：Windows 10/11 · Python 3.12.10 · Pillow 11.3.0 · moviepy 2.1.2 · 系统 ffmpeg 7.1（gyan 完整版）
 测试命令（仓库根目录）：
 
@@ -72,7 +75,7 @@ python -m unittest discover -s tests -v
 | 非原子写 | 临时文件 + 校验 + `os.replace` | `test_renders_a_grid_of_the_expected_size` 检查无残留 |
 | 静默覆盖 | 默认跳过，`--force` 才覆盖 | `test_second_run_skips_and_force_rewrites` |
 | 无汇总/无退出码 | 表格 + 汇总 + 0/1/2/130 | 全部端到端用例 |
-| 顺序不可复现 | 按文件名排序 + 结果按输入序 | `test_finds_sorts_and_dedupes`、`test_report_keeps_input_order` |
+| 顺序不可复现 | 按文件名排序 + 结果按输入序 | `test_finds_sorts_and_dedupes`、`test_report_numbers_stay_in_discovery_order` |
 | 白边 1.25 被截成 1 px | `--border` 整数，默认 2 | `test_layout_geometry` |
 | 字体缺失不可读 | 多候选字体 + 描边 + 自适应字号 | `test_unusable_font_fails_the_file_not_the_batch`（显式字体错时明确失败） |
 | 每帧重复加载字体 | 每个视频一次 | 代码审查 |
