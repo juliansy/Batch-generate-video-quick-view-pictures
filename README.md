@@ -33,6 +33,14 @@ One contact sheet per video: evenly spaced frames stamped with their timecode. E
 - Saves `sheets/<name>_collage.jpg`.
 - Skips sheets that already exist, and says why a file was skipped or failed.
 
+### Format and size
+
+JPEG is the default: every viewer, browser and chat window opens it. It is written at quality 82 with 4:4:4 chroma, which keeps the thin red timecode crisp — the usual 4:2:0 subsampling smears it, and the file is no bigger this way.
+
+`--format avif` writes the same sheet in about a third of the bytes (166 MP: 12 MB JPEG vs 4 MB AVIF) for a slower encode. AVIF needs a recent viewer: Windows 11 Photos, Chrome, Edge, Firefox and macOS Preview open it; Windows 10 needs the free AVIF extension from the Store.
+
+A sheet is a bitmap in memory before it is compressed, at roughly 3 bytes per pixel: 25 MP is 75 MB, 166 MP is 500 MB, and the encoder adds a copy. `--max-pixels` (default 320,000,000) is the guard; lower it on a small machine, or lower `--decode-workers` so fewer frames are in flight at once.
+
 ## Layout
 
 ```text
@@ -85,7 +93,9 @@ python qvp.py -g 4x4 D:\Videos       # fixed grid instead of auto
 | `--decode-workers N` | auto | ffmpeg processes pulling frames in parallel |
 | `-f, --force` | off | overwrite existing sheets |
 | `-n, --dry-run` | off | analyse only |
-| `--max-pixels N` | 200,000,000 | refuse larger canvases |
+| `--max-pixels N` | 320,000,000 | refuse larger canvases (the canvas needs ~3 bytes per pixel in RAM) |
+| `--format jpeg\|avif` | `jpeg` | sheet format; AVIF is about a third of the size, slower to write |
+| `--quality 1-100` | 82 jpeg / 60 avif | encoder quality |
 | `--ffmpeg PATH` | auto | ffmpeg to try first |
 | `--log FILE` | — | append a run log |
 | `-q, --quiet` | off | summary line only |
@@ -150,7 +160,7 @@ Dense early, flatter later; a portrait sheet is chosen with one size comparison,
 ## Limitations
 
 - Frames are taken at fixed intervals, not on scene changes.
-- One image per video at source resolution: 4x4 of 4K is ~133 MP and needs ~0.7 GB RAM.
+- One image per video at source resolution: 4x4 of 4K is ~133 MP and needs ~1 GB RAM; `--format avif` shrinks the file, not the memory.
 - The first and last second are skipped.
 - Seeking costs time: each frame decodes from the previous keyframe, so 4K sheets take seconds even in parallel.
 - Only the picture is used; audio, subtitles and cover art are ignored.

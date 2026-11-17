@@ -748,5 +748,62 @@ class MixedSizeEndToEndTests(unittest.TestCase):
         self.assertIn("1 done", output)
 
 
+class OutputFormatTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not FFMPEG:
+            raise unittest.SkipTest("ffmpeg not available")
+        cls.base = Path(tempfile.mkdtemp(prefix="qvp-format-"))
+        cls.clip = make_clip(cls.base / "src" / "clip.mp4", seconds=2)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.base, ignore_errors=True)
+
+    def workdir(self, name: str) -> Path:
+        folder = self.base / name
+        if folder.exists():
+            shutil.rmtree(folder)
+        folder.mkdir(parents=True)
+        shutil.copy(self.clip, folder / "clip.mp4")
+        return folder
+
+    def test_default_output_is_jpeg(self):
+        folder = self.workdir("jpeg")
+        code, output = run_main([str(folder), "--frames", "4"])
+        self.assertEqual(code, 0, output)
+        self.assertTrue((folder / qvp.OUT_DIR_NAME / "clip_collage.jpg").is_file())
+
+    def test_avif_output_has_its_own_extension(self):
+        from PIL import features
+
+        if not features.check("avif"):
+            self.skipTest("Pillow was built without AVIF")
+        folder = self.workdir("avif")
+        code, output = run_main([str(folder), "--frames", "4", "--format", "avif"])
+        self.assertEqual(code, 0, output)
+        sheet = folder / qvp.OUT_DIR_NAME / "clip_collage.avif"
+        self.assertTrue(sheet.is_file())
+        with qvp.Image.open(sheet) as image:
+            self.assertEqual(image.size, (2 * (320 + 2 * qvp.BORDER_SIZE), 2 * (240 + 2 * qvp.BORDER_SIZE)))
+
+    def test_quality_flag_is_validated(self):
+        folder = self.workdir("quality")
+        code, output = run_main([str(folder), "--frames", "4", "--quality", "101"])
+        self.assertEqual(code, 2)
+        self.assertIn("--quality must be between", output)
+        code, output = run_main([str(folder), "--frames", "4", "-q", "--quality", "70"])
+        self.assertEqual(code, 0, output)
+
+    def test_bigger_default_pixel_budget(self):
+        self.assertEqual(qvp.MAX_PIXELS, 320_000_000)
+        layout = qvp.layout_for(3840, 2160, (5, 5), qvp.BORDER_SIZE)
+        self.assertLessEqual(layout.pixels, qvp.MAX_PIXELS)
+
+    def test_output_name_takes_a_suffix(self):
+        self.assertEqual(qvp.output_name("talk", ".avif"), "talk_collage.avif")
+        self.assertEqual(qvp.output_name("talk"), "talk_collage.jpg")
+
+
 if __name__ == "__main__":
     unittest.main()

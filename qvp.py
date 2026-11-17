@@ -90,9 +90,12 @@ GPU_CHUNK_WORKERS = 2     # concurrent GPU processes: more than this starts swap
 BORDER_SIZE = 2          # white border around every frame, in pixels
 TEXT_COLOR = "red"       # timecode colour
 
-VERSION = "2.8.0"
-JPEG_QUALITY = 85
-MAX_PIXELS = 200_000_000  # refuse to build a canvas bigger than this
+VERSION = "2.9.0"
+JPEG_QUALITY = 82         # 4:4:4 at 82 matches q85 4:2:0 in bytes, sharper on text
+JPEG_SUBSAMPLING = "4:4:4"  # chroma at full resolution: text survives compression
+AVIF_QUALITY = 60         # AVIF at 60 looks like JPEG at 84 and is ~3x smaller
+MAX_PIXELS = 320_000_000  # refuse to build a canvas bigger than this (4K 5x5 is 208 MP)
+SHEET_FORMATS = {"jpeg": ".jpg", "avif": ".avif"}
 
 VIDEO_SUFFIXES = frozenset(
     {".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".mpg", ".mpeg", ".ts", ".m2ts"}
@@ -204,6 +207,8 @@ class Options:
     force: bool = False
     dry_run: bool = False
     max_pixels: int = MAX_PIXELS
+    image_format: str = "jpeg"
+    quality: int = 0
     log: Path | None = None
     quiet: bool = False
 
@@ -323,8 +328,8 @@ def layout_for(width: int, height: int, grid: tuple[int, int], border: int) -> L
     return Layout(grid[0], grid[1], border, width + 2 * border, height + 2 * border)
 
 
-def output_name(stem: str) -> str:
-    return f"{stem}_collage.jpg"
+def output_name(stem: str, suffix: str = ".jpg") -> str:
+    return f"{stem}_collage{suffix}"
 
 
 def font_size_for(cell_width: int) -> int:
@@ -855,14 +860,14 @@ def frame_source(
 # --------------------------------------------------------------------------
 
 
-def output_for(video: Path, out_dir: Path | None) -> Path:
+def output_for(video: Path, out_dir: Path | None, suffix: str = ".jpg") -> Path:
     folder = out_dir if out_dir is not None else video.parent / OUT_DIR_NAME
-    return folder / output_name(video.stem)
+    return folder / output_name(video.stem, suffix)
 
 
 def plan_job(video: Path, opts: Options) -> Job | Result:
     """Return a Job to render, or a Result explaining why it will not be."""
-    output = output_for(video, opts.out_dir)
+    output = output_for(video, opts.out_dir, SHEET_FORMATS[opts.image_format])
     if output.exists() and not opts.force:
         return Result(video.name, "skipped", "already exists (use --force to overwrite)", output=output)
 
@@ -1006,7 +1011,7 @@ def render_job(job: Job, opts: Options) -> Result:
                         (index // layout.cols) * layout.cell_h + layout.border,
                     ),
                 )
-        canvas.save(tmp, format="JPEG", quality=JPEG_QUALITY)
+        save_sheet(canvas, tmp, opts)
         verify_image(tmp, canvas_size)
         os.replace(tmp, job.output)
     except UsageError as exc:
@@ -1060,6 +1065,31 @@ def clean_stale_temps(output: Path, max_age: float = 3600.0) -> None:
 def finish_failure(job: Job, tmp: Path, started: float, reason: str) -> Result:
     return Result(
         job.name, "failed", reason, round(time.perf_counter() - started, 2), 0, "-", None, job.output
+    )
+
+
+def save_sheet(canvas: Image.Image, path: Path, opts: "Options") -> None:
+    """Write the sheet in the chosen format.
+
+    JPEG stays the default because every viewer opens it; 4:4:4 chroma and
+    progressive coding keep the thin red timecode readable and shave ~10% off
+    the file. AVIF is offered for people who want the same picture in roughly a
+    third of the bytes, at the price of a slower encode and a newer viewer.
+    """
+    quality = opts.quality or (AVIF_QUALITY if opts.image_format == "avif" else JPEG_QUALITY)
+    if opts.image_format == "avif":
+        try:
+            canvas.save(path, format="AVIF", quality=quality, speed=6, subsampling=JPEG_SUBSAMPLING)
+        except (ValueError, OSError) as exc:
+            raise UsageError(f"this Pillow cannot write AVIF ({short_error(exc)}) - use --format jpeg") from exc
+        return
+    canvas.save(
+        path,
+        format="JPEG",
+        quality=quality,
+        subsampling=JPEG_SUBSAMPLING,
+        optimize=True,
+        progressive=True,
     )
 
 
@@ -1238,7 +1268,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("-f", "--force", action="store_true", help="overwrite existing sheets")
     parser.add_argument("-n", "--dry-run", action="store_true", help="print the plan, write nothing")
-    parser.add_argument("--max-pixels", type=int, default=MAX_PIXELS, help="canvas pixel budget")
+    parser.add_argument(
+        "--max-pixels", type=int, default=MAX_PIXELS,
+        help="canvas pixel budget (default 320 MP; the canvas itself needs ~3 bytes per pixel in RAM)",
+    )
+    parser.add_argument(
+        "--format", dest="image_format", choices=sorted(SHEET_FORMATS), default="jpeg",
+        help="sheet format: jpeg (default, opens anywhere) or avif (~3x smaller, slower)",
+    )
+    parser.add_argument("--quality", type=int, default=0, help="encoder quality 1-100 (default: 84 jpeg, 60 avif)")
     parser.add_argument("--log", type=Path, help="append a run log to this file")
     parser.add_argument("-q", "--quiet", action="store_true", help="only print the summary line")
     parser.add_argument("-V", "--version", action="version", version=f"qvp {VERSION}")
@@ -1260,6 +1298,8 @@ def options_from_args(args: argparse.Namespace) -> Options:
         raise UsageError("--max-pixels must be at least 1,000,000")
     if args.font_size is not None and not 6 <= args.font_size <= 400:
         raise UsageError("--font-size must be between 6 and 400")
+    if not 0 <= args.quality <= 100:
+        raise UsageError("--quality must be between 0 (auto) and 100")
     color_or_raise(args.color)
     paths = args.paths or [Path(__file__).resolve().parent]
     frames = args.frames
@@ -1282,6 +1322,8 @@ def options_from_args(args: argparse.Namespace) -> Options:
         force=args.force,
         dry_run=args.dry_run,
         max_pixels=args.max_pixels,
+        image_format=args.image_format,
+        quality=args.quality,
         log=args.log,
         quiet=args.quiet,
     )

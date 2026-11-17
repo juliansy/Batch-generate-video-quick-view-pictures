@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.9.0
+
+- JPEG sheets are written at quality 82 with 4:4:4 chroma and progressive coding: the red timecode stays crisp (average red error 7 instead of 34) and the file is about the same size as before.
+- `--format avif` writes the same sheet in roughly a third of the bytes (166 MP: 12 MB JPEG vs 4 MB AVIF); the encode takes a few seconds longer.
+- `--quality 1-100` overrides the encoder quality.
+- The default `--max-pixels` budget is 320,000,000, so a 4K 5x5 sheet (208 MP) is no longer refused. The docs now state the memory cost: about 3 bytes per pixel for the canvas.
+
 ## v2.8.0
 
 - The report lists finished files first, then skipped, then failed, each keeping its discovery number, so the failed lines sit together and can be copied in one block.
