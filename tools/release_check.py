@@ -42,7 +42,6 @@ PUBLIC_DOCS = [
     "docs/06-auto-grid.md",
     "docs/07-performance.md",
     "docs/08-release.md",
-    "docs/09-online.md",
     "qvp.bat",
 ]
 
@@ -63,9 +62,8 @@ PRIVATE = [
 
 REQUIRED = [
     "qvp.py", "qvp.bat", "README.md", "README.zh-CN.md", "CHANGELOG.md",
-    "LICENSE", "requirements.txt", "qvp_online.py",
+    "LICENSE", "requirements.txt",
     "docs/06-auto-grid.md", "docs/07-performance.md", "docs/08-release.md",
-    "docs/09-online.md",
 ]
 
 # Only a checkout has these; the release archive deliberately does not.
@@ -144,18 +142,6 @@ class Gate:
         else:
             self.add("PASS", "V4", f"CHANGELOG.md starts at v{self.version}")
 
-    def check_online_version(self) -> None:
-        match = re.search(r'^VERSION = "([0-9][0-9.]*)"', self.read("qvp_online.py"), re.M)
-        if not match:
-            self.add("FAIL", "V6", "qvp_online.py has no VERSION constant")
-            return
-        printed = self.run(sys.executable, "qvp_online.py", "--version").stdout.strip()
-        expected = f"qvp_online {match.group(1)}"
-        if printed == expected:
-            self.add("PASS", "V6", f"qvp_online --version prints {printed}")
-        else:
-            self.add("FAIL", "V6", f"qvp_online --version prints {printed!r}, expected {expected!r}")
-
     # -- T: test count ---------------------------------------------------
     def check_tests(self, skip: bool) -> None:
         if skip:
@@ -211,26 +197,6 @@ class Gate:
             self.add("FAIL", "F1", f"flags in the README table but not in the parser: {extra}")
         if not missing and not extra:
             self.add("PASS", "F1", f"{len(found)} flags, documented and implemented")
-
-    def check_online_flags(self) -> None:
-        """docs/09 documents the online tool, so it gets the same flag audit."""
-        source = self.read("qvp_online.py")
-        found: set[str] = set()
-        for chunk in source.split("add_argument(")[1:]:
-            found.update(re.findall(r'"(-{1,2}[A-Za-z][A-Za-z0-9-]*)"', chunk.split(")", 1)[0]))
-        found -= {"-h", "--help"}
-        documented: set[str] = set()
-        for line in self.read("docs/09-online.md").splitlines():
-            if line.startswith("| `"):
-                documented.update(re.findall(r"(-{1,2}[A-Za-z][A-Za-z0-9-]*)", line.split("|")[1]))
-        missing = sorted(flag for flag in found if flag not in documented)
-        extra = sorted(flag for flag in documented if flag not in found)
-        if missing:
-            self.add("FAIL", "F2", f"qvp_online flags missing from docs/09: {missing}")
-        if extra:
-            self.add("FAIL", "F2", f"docs/09 lists flags qvp_online does not have: {extra}")
-        if not missing and not extra:
-            self.add("PASS", "F2", f"{len(found)} online flags, documented and implemented")
 
     # -- H: bilingual parity ---------------------------------------------
     def sections(self, name: str) -> list[tuple[str, str]]:
@@ -391,10 +357,8 @@ class Gate:
     # -- driver ----------------------------------------------------------
     def execute(self, args) -> int:
         self.check_version()
-        self.check_online_version()
         self.check_tests(args.skip_tests)
         self.check_flags()
-        self.check_online_flags()
         self.check_headings()
         self.check_wording()
         self.check_files()

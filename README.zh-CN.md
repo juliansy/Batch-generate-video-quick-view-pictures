@@ -108,30 +108,19 @@ python qvp.py -g 4x4 "D:\Videos"          # 固定网格，不用自动
 ## 输出
 
 ```text
-qvp 2.10.0
+qvp 2.9.9
 2 video(s) | grid auto | sheets/ next to each video
 [1/2] lecture-01.mp4 … ok
 [2/2] talk-02.mp4 … ok
 #  file            grid  frames  canvas     time   result
 -  --------------  ----  ------  ---------  -----  ------
-1  lecture-01.mp4  4x3   12      5136x2172  1.21s  ok
+1  lecture-01.mp4  4x3   12      5136x2172  1.07s  ok
 2  talk-02.mp4     2x2   4       2568x1448  0.40s  ok
 
-2 done, 0 skipped, 0 failed | 1.85s
+2 done, 0 skipped, 0 failed | 1.65s
 ```
 
 `canvas` 是速览图的像素尺寸，`time` 是这个文件花的时间。标签和错误提示是英文；来自视频本身的报错沿用 ffmpeg 的原文。
-
-## 线上视频
-
-`qvp_online.py` 出的是同一种速览图，只是输入从文件换成了 URL。它向 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 要一条直链，让 ffmpeg 在远端流里 seek，因此不需要先把整片下载下来。
-
-```bat
-python qvp_online.py "https://www.bilibili.com/video/BV..."
-python qvp_online.py -g 4x4 --frame-workers 6 URL1 URL2
-```
-
-除 `ffmpeg` 外还需要 `yt-dlp`；B 站这类 CDN 要求的 `Referer`/`User-Agent` 脚本会自己带。签名直链一两个小时就会过期，脚本会重新解析而不是让任务失败。每帧的传输量大致等于码率乘关键帧间隔，所以"帧数少 + 低码率"才是它划算的场景——具体数字、参数与反例见 [`docs/09`](docs/09-online.md)。
 
 ## 自动网格
 

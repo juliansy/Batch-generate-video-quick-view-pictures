@@ -28,7 +28,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 FILES = [
     "qvp.py",
-    "qvp_online.py",
     "qvp.bat",
     "README.md",
     "README.zh-CN.md",

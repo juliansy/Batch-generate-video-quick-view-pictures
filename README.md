@@ -108,30 +108,19 @@ Exit codes: `0` everything ok or skipped (an existing folder with no videos also
 ## Output
 
 ```text
-qvp 2.10.0
+qvp 2.9.9
 2 video(s) | grid auto | sheets/ next to each video
 [1/2] lecture-01.mp4 … ok
 [2/2] talk-02.mp4 … ok
 #  file            grid  frames  canvas     time   result
 -  --------------  ----  ------  ---------  -----  ------
-1  lecture-01.mp4  4x3   12      5136x2172  1.21s  ok
+1  lecture-01.mp4  4x3   12      5136x2172  1.07s  ok
 2  talk-02.mp4     2x2   4       2568x1448  0.40s  ok
 
-2 done, 0 skipped, 0 failed | 1.85s
+2 done, 0 skipped, 0 failed | 1.65s
 ```
 
 `canvas` is the sheet size in pixels, `time` is how long that file took. Labels and error text are English; a message coming from the video itself is passed through as ffmpeg phrased it.
-
-## Online videos
-
-`qvp_online.py` is the same sheet, built from a URL instead of a file. It asks [yt-dlp](https://github.com/yt-dlp/yt-dlp) for the direct stream URL and lets ffmpeg seek inside the remote stream, so it never downloads the whole video.
-
-```bat
-python qvp_online.py "https://www.bilibili.com/video/BV..."
-python qvp_online.py -g 4x4 --frame-workers 6 URL1 URL2
-```
-
-It needs `yt-dlp` next to `ffmpeg`, and it sends the `Referer`/`User-Agent` a CDN expects. Signed URLs expire after an hour or two; the script resolves again instead of failing the job. Cost per frame is roughly bitrate x keyframe interval, so few cells on a low-bitrate stream is where this wins - [`docs/09`](docs/09-online.md) has the numbers, the flags and the cases where downloading a small copy is cheaper.
 
 ## Auto grid
 
