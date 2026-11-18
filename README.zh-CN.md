@@ -132,16 +132,16 @@ aria2 会追加 gid、文件数与第一个文件路径，`--aria2-hook` 就从�
 ## 输出
 
 ```text
-qvp 2.10.1
+qvp 2.10.0
 2 video(s) | grid auto | sheets/ next to each video
 [1/2] lecture-01.mp4 … ok
 [2/2] talk-02.mp4 … ok
 #  file            grid  frames  canvas     time   result
 -  --------------  ----  ------  ---------  -----  ------
-1  lecture-01.mp4  4x3   12      5136x2172  1.20s  ok
+1  lecture-01.mp4  4x3   12      5136x2172  1.18s  ok
 2  talk-02.mp4     2x2   4       2568x1448  0.42s  ok
 
-2 done, 0 skipped, 0 failed | 1.80s
+2 done, 0 skipped, 0 failed | 1.77s
 ```
 
 `canvas` 是速览图的像素尺寸，`time` 是这个文件花的时间。标签和错误提示是英文；来自视频本身的报错沿用 ffmpeg 的原文。
