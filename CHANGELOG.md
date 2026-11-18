@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.10.0
+
+- `qvp_online.py` builds the same sheets from a URL. It asks yt-dlp for the direct stream URL, then lets ffmpeg seek inside the remote stream (`-ss` before `-i`, one process per frame, four in parallel by default) and never downloads the whole video. The composition, grid ladder, timecodes, atomic write and report are the same code `qvp.py` uses; only the frame source is new.
+- Expiry is handled rather than suffered: a refused URL (403/410/expired) is resolved again, a failed fast seek is retried as an exact seek, and the report says how many times either happened.
+- Only `http`/`https` media URLs are accepted. A site that offers nothing but an HLS/DASH manifest is refused with a message instead of being guessed at - see `docs/09-online.md` for why and for the transfer-cost table (bytes per frame ~ bitrate x keyframe interval).
+- The release gate grew two checks: `V6` compares `qvp_online --version` with its constant, `F2` compares the flags in `docs/09` with `argparse`. Both exist because the local tool's version string and option table have drifted before.
+
 ## v2.9.9
 
 - The gate passes on its own release archive. v2.9.8 shipped a `release_check.py` that failed `N3` inside the unzipped package, because it demanded `.gitignore` and `.gitattributes` from a tree that is deliberately not a checkout, and `K1` ran `git tag` in a folder with no repository. Required files are now split into checkout-only and always-required, and tag checks report "running from an archive" instead of nothing.
