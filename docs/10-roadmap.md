@@ -40,10 +40,12 @@ if 估算 > 可用内存 × 0.6:
 
 结论：**下载再本地处理**在任何帧数下都不亏，且可预测。线上视频能力若要做，正确形状是"下载最低档 → 走本地流程 → 删临时文件"。
 
-## 观察中：aria2 RPC 联动
+## 实验中：aria2 RPC 联动（分支 `feature/aria2`，未合入 `main`）
 
 Bilibili-Evolved 的 `aria2-output` 插件通过 `aria2.addUri` 把视频/音频/字幕分片投给 aria2，文件落在 aria2 的 `dir` 下，名字来自 `out` 参数（标题）。
 
-可能的接法：`qvp.py --aria2 http://127.0.0.1:6800/jsonrpc` 查询 `aria2.tellStopped`，拿 `files[].path` 直接处理，跳过目录扫描。好处是与插件解耦（任何 aria2 客户端都适用），代价是依赖用户开着 aria2 的 RPC 端口。
+分支上的形状：拉取式 `--aria2`（`tellStopped`，只取视频文件，忽略旁边的 `.m4a`）与推送式 `--aria2-hook`（`--on-download-complete` 追加 gid，脚本据此 `tellStatus`）。本地假 RPC 服务器覆盖了过滤、去重、密钥、gid、不可达与错误透传。
 
-状态：未实现，等确认。
+**为什么没合入**：常见的"aria2 RPC"端点未必是真 aria2。Ghost Downloader 3 的兼容模式只实现了建任务需要的那几个方法（`getVersion`、`addUri` 等），`tellStopped`/`tellActive` 会返回 `No such method`。在弄清目标下载器实际支持哪些方法、以及要不要换成监听目录的 `--watch` 之前，这条线留在分支上。
+
+下一步待定：先探测端点能力（`getVersion` 后试 `tellStopped`），能力不足时明确提示并退回目录模式 / `--watch`。
