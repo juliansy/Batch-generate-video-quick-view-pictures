@@ -37,8 +37,6 @@ import tempfile
 import threading
 import time
 import unicodedata
-import urllib.error
-import urllib.request
 import uuid
 import warnings
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -95,7 +93,7 @@ GPU_CHUNK_WORKERS = 2  # concurrent GPU processes: more than this starts swappin
 BORDER_SIZE = 2  # white border around every frame, in pixels
 TEXT_COLOR = "red"  # timecode colour
 
-VERSION = "2.10.0"
+VERSION = "2.9.9"
 JPEG_QUALITY = 82  # 4:4:4 at 82 matches q85 4:2:0 in bytes, sharper on text
 JPEG_SUBSAMPLING = "4:4:4"  # chroma at full resolution: text survives compression
 AVIF_QUALITY = 60  # AVIF at 60 looks like JPEG at 84 and is ~3x smaller
@@ -229,10 +227,6 @@ class Options:
     quality: int = 0
     log: Path | None = None
     quiet: bool = False
-    aria2: str | None = None
-    aria2_secret: str | None = None
-    aria2_gid: str | None = None
-    aria2_limit: int = 200
 
     def frame_count(self, cells: int) -> int:
         return self.frames if self.frames is not None else cells
@@ -1563,59 +1557,6 @@ def render_report(results: Sequence[Result], elapsed: float) -> str:
 # --------------------------------------------------------------------------
 
 
-DEFAULT_ARIA2 = "http://127.0.0.1:6800/jsonrpc"
-ARIA2_TIMEOUT = 20.0
-GID_PATTERN = re.compile(r"^[0-9a-fA-F]{16}$")
-
-
-def aria2_call(endpoint: str, method: str, params: list) -> object:
-    body = json.dumps({"jsonrpc": "2.0", "id": "qvp", "method": method, "params": params})
-    request = urllib.request.Request(
-        endpoint, data=body.encode("utf-8"), headers={"Content-Type": "application/json"}
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=ARIA2_TIMEOUT) as response:
-            payload = json.loads(response.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as exc:
-        raise UsageError(f"aria2 answered HTTP {exc.code} at {endpoint}") from exc
-    except (urllib.error.URLError, OSError) as exc:
-        raise UsageError(f"cannot reach aria2 at {endpoint} ({short_error(exc, 90)})") from exc
-    except json.JSONDecodeError as exc:
-        raise UsageError(f"aria2 returned something that is not JSON ({exc})") from exc
-    if isinstance(payload, dict) and payload.get("error"):
-        detail = payload["error"].get("message") or payload["error"].get("code")
-        raise UsageError(f"aria2 refused the request: {detail}")
-    return payload.get("result") if isinstance(payload, dict) else payload
-
-
-def aria2_videos(endpoint: str, secret: str | None, gid: str | None, limit: int) -> list[Path]:
-    """Video files aria2 has finished downloading, in the order it finished."""
-    keys = ["gid", "status", "files", "dir"]
-    prefix = [f"token:{secret}"] if secret else []
-    if gid:
-        status = aria2_call(endpoint, "aria2.tellStatus", [*prefix, gid, keys])
-        statuses = [status] if isinstance(status, dict) else []
-    else:
-        result = aria2_call(endpoint, "aria2.tellStopped", [*prefix, 0, limit, keys])
-        statuses = [item for item in result if isinstance(item, dict)] if isinstance(result, list) else []
-
-    found: list[Path] = []
-    seen: set[str] = set()
-    for status in statuses:
-        if str(status.get("status") or "") != "complete":
-            continue
-        for item in status.get("files") or []:
-            path = Path(str(item.get("path") or ""))
-            if path.suffix.lower() not in VIDEO_SUFFIXES:
-                continue
-            key = os.path.normcase(str(path.resolve() if path.exists() else path))
-            if key in seen:
-                continue
-            seen.add(key)
-            found.append(path)
-    return found
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="qvp.py",
@@ -1697,23 +1638,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--log", type=Path, help="append a run log to this file")
     parser.add_argument("-q", "--quiet", action="store_true", help="only print the summary line")
-    parser.add_argument(
-        "--aria2",
-        nargs="?",
-        const=DEFAULT_ARIA2,
-        metavar="URL",
-        help="process what aria2 finished (default endpoint " + DEFAULT_ARIA2 + ")",
-    )
-    parser.add_argument("--aria2-secret", metavar="TOKEN", help="aria2 RPC secret, if one is set")
-    parser.add_argument("--aria2-gid", metavar="GID", help="process one aria2 download by gid")
-    parser.add_argument(
-        "--aria2-limit", type=int, default=200, metavar="N",
-        help="how many finished downloads to look at (default: 200)",
-    )
-    parser.add_argument(
-        "--aria2-hook", action="store_true",
-        help="for aria2 --on-download-complete: read the gid aria2 appends",
-    )
     parser.add_argument("-V", "--version", action="version", version=f"qvp {VERSION}")
     return parser
 
@@ -1738,17 +1662,7 @@ def options_from_args(args: argparse.Namespace) -> Options:
     if not 0 <= args.quality <= 100:
         raise UsageError("--quality must be between 0 (auto) and 100")
     color_or_raise(args.color)
-    gid = args.aria2_gid
-    if args.aria2_hook:
-        # aria2 --on-download-complete appends: gid, number of files, first path.
-        candidate = args.paths[0].name if args.paths else ""
-        if not GID_PATTERN.match(candidate):
-            raise UsageError("--aria2-hook expects aria2 to append the gid as its first argument")
-        gid = candidate
-    if gid and not GID_PATTERN.match(gid):
-        raise UsageError(f"--aria2-gid wants a 16 character hex gid, got {gid!r}")
-    aria2_mode = bool(args.aria2 or gid)
-    paths = [] if aria2_mode else (args.paths or [Path(__file__).resolve().parent])
+    paths = args.paths or [Path(__file__).resolve().parent]
     frames = args.frames
     return Options(
         paths=list(paths),
@@ -1773,10 +1687,6 @@ def options_from_args(args: argparse.Namespace) -> Options:
         quality=args.quality,
         log=args.log,
         quiet=args.quiet,
-        aria2=(args.aria2 or DEFAULT_ARIA2) if aria2_mode else None,
-        aria2_secret=args.aria2_secret,
-        aria2_gid=gid,
-        aria2_limit=max(1, args.aria2_limit),
     )
 
 
@@ -1818,36 +1728,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"qvp {VERSION}", flush=True)  # say something before the first ffprobe
 
     started = time.perf_counter()
-    missing: list[Path] = []
-    if opts.aria2:
-        try:
-            videos = aria2_videos(opts.aria2, opts.aria2_secret, opts.aria2_gid, opts.aria2_limit)
-        except UsageError as exc:
-            print(f"qvp: {exc}", file=sys.stderr)
-            return 2
-        gone = [path for path in videos if not path.exists()]
-        for path in gone:
-            print(f"warning: aria2 listed a file that is not there: {path}", file=sys.stderr)
-        videos = [path for path in videos if path.exists()]
-        missing = gone
-        source = "aria2"
-    else:
-        videos, missing = discover(opts.paths, opts.recursive)
-        source = "disk"
+    videos, missing = discover(opts.paths, opts.recursive)
     for path in missing:
         print(f"warning: not found or not a video: {path}", file=sys.stderr)
     if not videos:
         if missing:
             print("no videos found: every path given was missing or not a video", file=sys.stderr)
             return 2
-        print("no finished video downloads in aria2" if source == "aria2" else "no videos found")
+        print("no videos found")
         return 0
 
     if not opts.quiet:
         where = str(opts.out_dir) if opts.out_dir else f"{OUT_DIR_NAME}/ next to each video"
         grid = f"{opts.grid[0]}x{opts.grid[1]}" if opts.grid else "auto"
-        from_source = " from aria2" if opts.aria2 else ""
-        print(f"{len(videos)} video(s){from_source} | grid {grid} | {where}", flush=True)
+        print(f"{len(videos)} video(s) | grid {grid} | {where}", flush=True)
 
     if not ffmpeg_candidates(opts.ffmpeg):
         try:

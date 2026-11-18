@@ -40,10 +40,10 @@ if 估算 > 可用内存 × 0.6:
 
 结论：**下载再本地处理**在任何帧数下都不亏，且可预测。线上视频能力若要做，正确形状是"下载最低档 → 走本地流程 → 删临时文件"。
 
-## 已实现：aria2 RPC 联动（v2.10.0）
+## 观察中：aria2 RPC 联动
 
 Bilibili-Evolved 的 `aria2-output` 插件通过 `aria2.addUri` 把视频/音频/字幕分片投给 aria2，文件落在 aria2 的 `dir` 下，名字来自 `out` 参数（标题）。
 
 可能的接法：`qvp.py --aria2 http://127.0.0.1:6800/jsonrpc` 查询 `aria2.tellStopped`，拿 `files[].path` 直接处理，跳过目录扫描。好处是与插件解耦（任何 aria2 客户端都适用），代价是依赖用户开着 aria2 的 RPC 端口。
 
-落地形状：拉取式 `--aria2`（查 `tellStopped`，只取视频文件）与推送式 `--aria2-hook`（aria2 的 `--on-download-complete` 追加 gid，脚本据此查 `tellStatus`）。测试用本地假 RPC 服务器覆盖了过滤、去重、密钥、gid 与不可达五种情况。
+状态：未实现，等确认。

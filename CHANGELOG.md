@@ -1,12 +1,5 @@
 # Changelog
 
-## v2.10.0
-
-- New source: `--aria2` takes the finished downloads straight from aria2's JSON-RPC (`aria2.tellStopped`) instead of scanning a folder, and `--aria2-gid` narrows it to one download. Only video files are taken - the `.m4a` track that a DASH download leaves next to the video is ignored, because a sheet needs the picture and nothing else.
-- `--aria2-hook` is the push version: point aria2's `--on-download-complete` at `qvp.bat --aria2-hook` and aria2 wakes the tool the moment a download finishes, appending the gid it read from the first argument.
-- Nothing is polled and nothing stays resident: one run, one report, exit code 0/1/2 like every other mode.
-- `docs/10-roadmap.md` now records what is deliberately not done - the global memory ceiling, and the remote-seek idea that careful measurement rejected (2.0x the file size instead of the hoped-for few megabytes).
-
 ## v2.9.9
 
 - The gate passes on its own release archive. v2.9.8 shipped a `release_check.py` that failed `N3` inside the unzipped package, because it demanded `.gitignore` and `.gitattributes` from a tree that is deliberately not a checkout, and `K1` ran `git tag` in a folder with no repository. Required files are now split into checkout-only and always-required, and tag checks report "running from an archive" instead of nothing.

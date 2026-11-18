@@ -101,47 +101,23 @@ python qvp.py -g 4x4 "D:\Videos"          # 固定网格，不用自动
 | `--ffmpeg PATH` | 自动 | 优先尝试的 ffmpeg |
 | `--log FILE` | — | 追加运行日志 |
 | `-q, --quiet` | 关 | 只打印汇总 |
-| `--aria2 [URL]` | — | 处理 aria2 已完成的下载（默认 `http://127.0.0.1:6800/jsonrpc`） |
-| `--aria2-secret TOKEN` | — | aria2 的 RPC 密钥 |
-| `--aria2-gid GID` | — | 只处理某一个下载 |
-| `--aria2-limit N` | 200 | 查看多少条已完成的下载 |
-| `--aria2-hook` | 关 | 给 `--on-download-complete` 用：读 aria2 追加的 gid |
 | `-V, --version` | — | 打印版本 |
 
 退出码：`0` 正常或跳过（存在的空目录也返回 `0`；路径不存在但还有其它输入时只报警告）、`1` 至少一个文件失败、`2` 参数有误、完全没有可用输入或缺少 ffmpeg/moviepy、`130` 中断。
 
-## aria2
-
-如果下载走 aria2（比如浏览器脚本通过 RPC 把任务发过去），qvp 可以直接从 aria2 取输入，不必扫目录：
-
-```bat
-python qvp.py --aria2
-python qvp.py --aria2 http://127.0.0.1:6800/jsonrpc --aria2-secret 密钥
-```
-
-它调用 `aria2.tellStopped` 取已完成的下载，只保留视频文件（`.mp4`、`.mkv` 等，旁边那条 `.m4a` 音轨会被忽略），然后对这些确切路径跑正常流程。不轮询、不驻留：跑一次，出一份报表。
-
-想让 aria2 在下载完成时直接唤起它，把钩子指向启动器即可：
-
-```bat
-aria2c --on-download-complete="C:\路径\qvp.bat --aria2-hook"
-```
-
-aria2 会追加 gid、文件数与第一个文件路径，`--aria2-hook` 就从这个位置读 gid。
-
 ## 输出
 
 ```text
-qvp 2.10.0
+qvp 2.9.9
 2 video(s) | grid auto | sheets/ next to each video
 [1/2] lecture-01.mp4 … ok
 [2/2] talk-02.mp4 … ok
 #  file            grid  frames  canvas     time   result
 -  --------------  ----  ------  ---------  -----  ------
-1  lecture-01.mp4  4x3   12      5136x2172  1.18s  ok
-2  talk-02.mp4     2x2   4       2568x1448  0.42s  ok
+1  lecture-01.mp4  4x3   12      5136x2172  1.07s  ok
+2  talk-02.mp4     2x2   4       2568x1448  0.40s  ok
 
-2 done, 0 skipped, 0 failed | 1.77s
+2 done, 0 skipped, 0 failed | 1.65s
 ```
 
 `canvas` 是速览图的像素尺寸，`time` 是这个文件花的时间。标签和错误提示是英文；来自视频本身的报错沿用 ffmpeg 的原文。
