@@ -135,6 +135,29 @@ class FilteringTests(unittest.TestCase, FakeServerMixin):
         self.assertEqual(result.returncode, 2)
         self.assertIn("16 character hex gid", result.stderr)
 
+    def test_aria2_error_text_is_surfaced(self):
+        """An endpoint that refuses the method should say so, not just "HTTP 400"."""
+        FakeAria2.statuses = []
+        original = FakeAria2.do_POST
+
+        def refuse(handler):
+            handler.rfile.read(int(handler.headers.get("Content-Length") or 0))
+            body = {"jsonrpc": "2.0", "id": "qvp", "error": {"code": 1, "message": "No such method: aria2.tellStopped"}}
+            data = json.dumps(body).encode()
+            handler.send_response(400)
+            handler.send_header("Content-Type", "application/json")
+            handler.send_header("Content-Length", str(len(data)))
+            handler.end_headers()
+            handler.wfile.write(data)
+
+        FakeAria2.do_POST = refuse
+        try:
+            with self.assertRaises(qvp.UsageError) as raised:
+                qvp.aria2_videos(self.endpoint, None, None, 10)
+        finally:
+            FakeAria2.do_POST = original
+        self.assertIn("No such method: aria2.tellStopped", str(raised.exception))
+
 
 class EndToEndTests(unittest.TestCase, FakeServerMixin):
     @classmethod

@@ -146,7 +146,7 @@ cProfile 的 `tottime` 前三名是 `BufferedReader.read`（12.7 s，读 ffmpeg 
 python tools/bench_profile.py "D:\Videos\clip.mp4"      # 分段 + cProfile + 热点
 python tools/bench_decode.py "D:\Videos\a.mp4" "D:\Videos\b.mp4"   # 串行 vs 并行
 python qvp.py -V                                         # 版本
-python -m unittest discover -s tests                     # 113 个用例
+python -m unittest discover -s tests                     # 114 个用例
 ```
 
 基准只用 CPU、一次只起一个基准进程、ffmpeg 输出到 `NUL`；不要在这些基准里加硬件解码参数——那会和其他使用 GPU 的程序抢显存。

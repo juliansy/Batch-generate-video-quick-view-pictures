@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.10.1
+
+- When aria2 answers with an error status, the message is now aria2's own text ("No such method: aria2.tellStopped", "Unauthorized") instead of a bare `HTTP 400`. Found while pointing the client at an endpoint that claimed to be aria2 4.5.4 but rejected every standard method - the old message made that indistinguishable from a network problem.
+
 ## v2.10.0
 
 - New source: `--aria2` takes the finished downloads straight from aria2's JSON-RPC (`aria2.tellStopped`) instead of scanning a folder, and `--aria2-gid` narrows it to one download. Only video files are taken - the `.m4a` track that a DASH download leaves next to the video is ignored, because a sheet needs the picture and nothing else.

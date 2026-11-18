@@ -95,7 +95,7 @@ GPU_CHUNK_WORKERS = 2  # concurrent GPU processes: more than this starts swappin
 BORDER_SIZE = 2  # white border around every frame, in pixels
 TEXT_COLOR = "red"  # timecode colour
 
-VERSION = "2.10.0"
+VERSION = "2.10.1"
 JPEG_QUALITY = 82  # 4:4:4 at 82 matches q85 4:2:0 in bytes, sharper on text
 JPEG_SUBSAMPLING = "4:4:4"  # chroma at full resolution: text survives compression
 AVIF_QUALITY = 60  # AVIF at 60 looks like JPEG at 84 and is ~3x smaller
@@ -1577,7 +1577,16 @@ def aria2_call(endpoint: str, method: str, params: list) -> object:
         with urllib.request.urlopen(request, timeout=ARIA2_TIMEOUT) as response:
             payload = json.loads(response.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
-        raise UsageError(f"aria2 answered HTTP {exc.code} at {endpoint}") from exc
+        # aria2 sends a JSON-RPC error body with 400 too ("No such method: ..."),
+        # and that sentence is the useful part.
+        detail = ""
+        try:
+            payload = json.loads(exc.read().decode("utf-8", "replace"))
+            detail = str((payload.get("error") or {}).get("message") or "")
+        except (ValueError, OSError):
+            detail = ""
+        suffix = f": {detail}" if detail else ""
+        raise UsageError(f"aria2 answered HTTP {exc.code} at {endpoint}{suffix}") from exc
     except (urllib.error.URLError, OSError) as exc:
         raise UsageError(f"cannot reach aria2 at {endpoint} ({short_error(exc, 90)})") from exc
     except json.JSONDecodeError as exc:

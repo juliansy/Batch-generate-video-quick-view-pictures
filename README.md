@@ -132,16 +132,16 @@ aria2 appends the gid, the file count and the first path; `--aria2-hook` reads t
 ## Output
 
 ```text
-qvp 2.10.0
+qvp 2.10.1
 2 video(s) | grid auto | sheets/ next to each video
 [1/2] lecture-01.mp4 … ok
 [2/2] talk-02.mp4 … ok
 #  file            grid  frames  canvas     time   result
 -  --------------  ----  ------  ---------  -----  ------
-1  lecture-01.mp4  4x3   12      5136x2172  1.18s  ok
+1  lecture-01.mp4  4x3   12      5136x2172  1.20s  ok
 2  talk-02.mp4     2x2   4       2568x1448  0.42s  ok
 
-2 done, 0 skipped, 0 failed | 1.77s
+2 done, 0 skipped, 0 failed | 1.80s
 ```
 
 `canvas` is the sheet size in pixels, `time` is how long that file took. Labels and error text are English; a message coming from the video itself is passed through as ffmpeg phrased it.
