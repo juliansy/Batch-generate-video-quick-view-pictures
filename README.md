@@ -101,23 +101,47 @@ python qvp.py -g 4x4 "D:\Videos"          # fixed grid instead of auto
 | `--ffmpeg PATH` | auto | ffmpeg to try first |
 | `--log FILE` | — | append a run log |
 | `-q, --quiet` | off | summary line only |
+| `--aria2 [URL]` | — | process what aria2 has finished (default `http://127.0.0.1:6800/jsonrpc`) |
+| `--aria2-secret TOKEN` | — | aria2 RPC secret, when one is set |
+| `--aria2-gid GID` | — | process one aria2 download |
+| `--aria2-limit N` | 200 | how many finished downloads to look at |
+| `--aria2-hook` | off | for `--on-download-complete`: read the gid aria2 appends |
 | `-V, --version` | — | print the version |
 
 Exit codes: `0` everything ok or skipped (an existing folder with no videos also exits `0`; a path that does not exist is only a warning while other inputs remain), `1` at least one file failed, `2` bad arguments, no usable input at all, or no ffmpeg/moviepy, `130` interrupted.
 
+## aria2
+
+If your downloads go through aria2 - for example with a browser script that sends them over RPC - qvp can take its input from aria2 instead of from a folder:
+
+```bat
+python qvp.py --aria2
+python qvp.py --aria2 http://127.0.0.1:6800/jsonrpc --aria2-secret TOKEN
+```
+
+It asks `aria2.tellStopped` for finished downloads, keeps the video files (`.mp4`, `.mkv`, ... and ignores the `.m4a` track that arrives next to them), and runs the normal pipeline on those exact paths. Nothing is polled and nothing stays resident: one run, one report.
+
+To have aria2 call it as soon as a download finishes, point its hook at the launcher:
+
+```bat
+aria2c --on-download-complete="C:\path\qvp.bat --aria2-hook"
+```
+
+aria2 appends the gid, the file count and the first path; `--aria2-hook` reads the gid from there.
+
 ## Output
 
 ```text
-qvp 2.9.9
+qvp 2.10.0
 2 video(s) | grid auto | sheets/ next to each video
 [1/2] lecture-01.mp4 … ok
 [2/2] talk-02.mp4 … ok
 #  file            grid  frames  canvas     time   result
 -  --------------  ----  ------  ---------  -----  ------
-1  lecture-01.mp4  4x3   12      5136x2172  1.07s  ok
-2  talk-02.mp4     2x2   4       2568x1448  0.40s  ok
+1  lecture-01.mp4  4x3   12      5136x2172  1.18s  ok
+2  talk-02.mp4     2x2   4       2568x1448  0.42s  ok
 
-2 done, 0 skipped, 0 failed | 1.65s
+2 done, 0 skipped, 0 failed | 1.77s
 ```
 
 `canvas` is the sheet size in pixels, `time` is how long that file took. Labels and error text are English; a message coming from the video itself is passed through as ffmpeg phrased it.
