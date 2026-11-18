@@ -178,7 +178,9 @@ Dense early, flatter later; a portrait sheet is chosen with one size comparison,
 
 Before publishing, run `python tools\release_check.py` (and `tools\make_package.py` for the archive); the gate and the human checklist are described in [`docs/08`](docs/08-release.md).
 
-Design, review and measurement notes, in Chinese: [`docs/06`](docs/06-auto-grid.md) and [`docs/07`](docs/07-performance.md) describe the current defaults; `docs/01`-`docs/05` are records from the v1 to v2 rewrite and are kept for the reasoning, not as a description of today's code.
+Design, review and measurement notes, in Chinese: [`docs/06`](docs/06-auto-grid.md) and [`docs/07`](docs/07-performance.md) describe the current defaults; `docs/10` lists what is deliberately not done and why: [`docs/10`](docs/10-roadmap.md).
+
+`docs/01`-`docs/05` are records from the v1 to v2 rewrite and are kept for the reasoning, not as a description of today's code.
 
 ## License
 

@@ -178,7 +178,9 @@ qvp 2.9.9
 
 发布前先跑 `python tools\release_check.py`（打包用 `tools\make_package.py`），检查项与人工清单见 [`docs/08`](docs/08-release.md)。
 
-设计、评审与测量笔记（中文）：[`docs/06`](docs/06-auto-grid.md) 与 [`docs/07`](docs/07-performance.md) 描述当前默认值；`docs/01`–`docs/05` 是 v1 到 v2 重写期间的记录，保留的是当时的推理，不代表今天的代码。
+设计、评审与测量笔记（中文）：[`docs/06`](docs/06-auto-grid.md) 与 [`docs/07`](docs/07-performance.md) 描述当前默认值；`docs/10` 记录明确不做的事和原因：[`docs/10`](docs/10-roadmap.md)。
+
+`docs/01`–`docs/05` 是 v1 到 v2 重写期间的记录，保留的是当时的推理，不代表今天的代码。
 
 ## 许可
 
