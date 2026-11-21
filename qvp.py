@@ -1027,7 +1027,7 @@ def frame_source(
         # to one process per frame, which retries the seek on its own.
         return [single(0, moment) for moment in chunk]
 
-    workdir = Path(tempfile.mkdtemp(prefix="qvp-frames-"))
+    workdir = Path(tempfile.mkdtemp(prefix=FRAME_PREFIX))
     try:
         if per_process <= 1 or total <= 1:
             pool_size, cpu_threads = decode_plan(total - 1, workers) if total > 1 else (1, 0)
@@ -1089,9 +1089,9 @@ def frame_source(
         try:
             yield chunked()
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
+            remove_tree(workdir)
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        remove_tree(workdir)
 
 
 # --------------------------------------------------------------------------
@@ -1321,6 +1321,54 @@ _SCANNED: set[str] = set()
 
 
 _TEMP_NAME = re.compile(r"^\..+\.tmp-\d+-[0-9a-f]{8}$")
+
+
+FRAME_PREFIX = "qvp-frames-"
+
+
+def remove_tree(path: Path, attempts: int = 5) -> None:
+    """Delete a temp tree, retrying briefly; say so instead of failing silently.
+
+    `shutil.rmtree(..., ignore_errors=True)` was hiding two kinds of leak on
+    Windows: a BMP still mapped by a reader minutes after the run, and a crash
+    between mkdtemp and the finally block. Silent is the problem, not the retry.
+    """
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt == attempts - 1:
+                print(
+                    f"warning: could not remove temporary files in {path} - delete it by hand",
+                    file=sys.stderr,
+                )
+                return
+            time.sleep(0.1 * (attempt + 1))
+
+
+def sweep_frame_dirs(max_age: float = 3600.0) -> int:
+    """Remove frame directories a killed run left in %TEMP% (older than an hour)."""
+    root = Path(tempfile.gettempdir())
+    now = time.time()
+    removed = 0
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return 0
+    for item in entries:
+        if not item.name.startswith(FRAME_PREFIX) or not item.is_dir():
+            continue
+        try:
+            if now - item.stat().st_mtime <= max_age:
+                continue
+        except OSError:
+            continue
+        remove_tree(item)
+        removed += 0 if item.exists() else 1
+    return removed
 
 
 def clean_stale_temps(output: Path, max_age: float = 3600.0) -> None:
@@ -1728,6 +1776,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"qvp {VERSION}", flush=True)  # say something before the first ffprobe
 
     started = time.perf_counter()
+    if not opts.dry_run:
+        sweep_frame_dirs()
     videos, missing = discover(opts.paths, opts.recursive)
     for path in missing:
         print(f"warning: not found or not a video: {path}", file=sys.stderr)
